@@ -32,6 +32,12 @@ type tui struct {
 	leads    []models.Lead
 	contacts []models.Contact
 	deals    []models.Deal
+
+	// overlayIsModal is true while the open overlay is a button-only modal
+	// (stage picker, delete confirm) rather than a text form. Modals have no
+	// text entry, so the global quit keys stay live over them; forms capture
+	// 'q' as input and are dismissed with Esc instead.
+	overlayIsModal bool
 }
 
 // Run builds the TUI over store and blocks until the user quits. It returns the
@@ -76,6 +82,12 @@ func newTUI(store *db.Store) *tui {
 // (form/modal) is showing, so typing in a form doesn't switch pages.
 func (t *tui) globalKeys(event *tcell.EventKey) *tcell.EventKey {
 	if t.pages.HasPage(pageOverlay) {
+		// A text form needs 'q' as input, so it owns every key (Esc cancels it).
+		// A button-only modal has no text entry, so quit stays available there.
+		if t.overlayIsModal && (event.Key() == tcell.KeyCtrlC || event.Rune() == 'q') {
+			t.app.Stop()
+			return nil
+		}
 		return event // let the overlay handle its own keys
 	}
 	switch event.Key() {
@@ -142,6 +154,7 @@ func (t *tui) mutate(page string, focus tview.Primitive, op func() error) {
 			t.setSummary(summary)
 			if t.pages.HasPage(pageOverlay) {
 				t.pages.RemovePage(pageOverlay)
+				t.overlayIsModal = false
 			}
 			t.show(page, focus)
 		})
@@ -196,10 +209,12 @@ func newListTable(title string) *tview.Table {
 // closeOverlay removes the transient form/modal and returns focus to page.
 func (t *tui) closeOverlay(page string, focus tview.Primitive) {
 	t.pages.RemovePage(pageOverlay)
+	t.overlayIsModal = false
 	t.show(page, focus)
 }
 
-// showOverlay layers a transient primitive centered over the current page.
+// showOverlay layers a transient text form centered over the current page. The
+// form captures every key (so 'q' types into fields); Esc cancels it.
 func (t *tui) showOverlay(p tview.Primitive, width, height int) {
 	modal := tview.NewFlex().
 		AddItem(nil, 0, 1, false).
@@ -208,8 +223,17 @@ func (t *tui) showOverlay(p tview.Primitive, width, height int) {
 			AddItem(p, height, 0, true).
 			AddItem(nil, 0, 1, false), width, 0, true).
 		AddItem(nil, 0, 1, false)
+	t.overlayIsModal = false
 	t.pages.AddPage(pageOverlay, modal, true, true)
 	t.app.SetFocus(p)
+}
+
+// showModal layers a button-only modal (a menu with no text entry). Unlike a
+// form, the global quit keys ('q' / Ctrl-C) stay live over it.
+func (t *tui) showModal(modal *tview.Modal) {
+	t.overlayIsModal = true
+	t.pages.AddPage(pageOverlay, modal, true, true)
+	t.app.SetFocus(modal)
 }
 
 // flashError shows an error in the status bar (handlers run on the event loop).

@@ -82,7 +82,7 @@ func (t *tui) showDealForm(existing *models.Deal) {
 	})
 	form.AddButton("Cancel", func() { t.closeOverlay(pageDeals, t.dealsTable) })
 	form.SetButtonsAlign(tview.AlignCenter)
-	form.SetBorder(true).SetTitle(" " + title + " ")
+	form.SetBorder(true).SetTitle(" " + title + " · Esc cancels ")
 	form.SetCancelFunc(func() { t.closeOverlay(pageDeals, t.dealsTable) })
 	t.showOverlay(form, 52, 18)
 }
@@ -105,8 +105,7 @@ func (t *tui) showStagePicker(d models.Deal) {
 				return err
 			})
 		})
-	t.pages.AddPage(pageOverlay, modal, true, true)
-	t.app.SetFocus(modal)
+	t.showModal(modal)
 }
 
 // contactIDText renders a contact id for an input field (blank when unset).

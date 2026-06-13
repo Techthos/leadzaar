@@ -316,10 +316,13 @@ Slow work runs off the event loop and mutations come back via `QueueUpdateDraw`.
    Contacts:    table ──Enter──▶ contact form (+its deals) ──Esc──▶ table
                 table ──'d'────▶ confirm Modal ──▶ cascade delete
       Deals:    table ──Enter──▶ deal form ──Esc──▶ table
-                table ──'s'────▶ stage picker ──▶ table
+                table ──'s'────▶ stage picker (modal) ──Esc/Cancel──▶ table
 ```
 
-Quit is always available (`q` / Ctrl-C). Header rows are fixed; row-0 selection is guarded.
+Quit: `Ctrl-C` quits from anywhere. `q` quits from any table and from the button-only **modals**
+(stage picker, delete confirm), which have no text entry. Inside the text **forms** `q` is normal
+input, so the way back is `Esc` (or the Cancel button); their title shows "Esc cancels". Header rows
+are fixed; row-0 selection is guarded.
 
 ## Acceptance Criteria
 

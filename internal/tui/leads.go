@@ -85,7 +85,7 @@ func (t *tui) showLeadForm(existing *models.Lead) {
 	})
 	form.AddButton("Cancel", func() { t.closeOverlay(pageLeads, t.leadsTable) })
 	form.SetButtonsAlign(tview.AlignCenter)
-	form.SetBorder(true).SetTitle(" " + title + " ")
+	form.SetBorder(true).SetTitle(" " + title + " · Esc cancels ")
 	form.SetCancelFunc(func() { t.closeOverlay(pageLeads, t.leadsTable) })
 	t.showOverlay(form, 52, 20)
 }
@@ -112,7 +112,7 @@ func (t *tui) showConvertForm(lead models.Lead) {
 	})
 	form.AddButton("Cancel", func() { t.closeOverlay(pageLeads, t.leadsTable) })
 	form.SetButtonsAlign(tview.AlignCenter)
-	form.SetBorder(true).SetTitle(" Convert: " + lead.Name + " ")
+	form.SetBorder(true).SetTitle(" Convert: " + lead.Name + " · Esc cancels ")
 	form.SetCancelFunc(func() { t.closeOverlay(pageLeads, t.leadsTable) })
 	t.showOverlay(form, 52, 14)
 }

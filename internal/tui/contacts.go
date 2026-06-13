@@ -73,7 +73,7 @@ func (t *tui) showContactForm(existing *models.Contact) {
 	})
 	form.AddButton("Cancel", func() { t.closeOverlay(pageContacts, t.contactsTable) })
 	form.SetButtonsAlign(tview.AlignCenter)
-	form.SetBorder(true).SetTitle(" " + title + " ")
+	form.SetBorder(true).SetTitle(" " + title + " · Esc cancels ")
 	form.SetCancelFunc(func() { t.closeOverlay(pageContacts, t.contactsTable) })
 	t.showOverlay(form, 52, 16)
 }
@@ -94,6 +94,5 @@ func (t *tui) confirmDeleteContact(c models.Contact) {
 			}
 			t.closeOverlay(pageContacts, t.contactsTable)
 		})
-	t.pages.AddPage(pageOverlay, modal, true, true)
-	t.app.SetFocus(modal)
+	t.showModal(modal)
 }
