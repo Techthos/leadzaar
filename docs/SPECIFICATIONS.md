@@ -287,42 +287,75 @@ description.
 
 ## TUI Surface
 
-Built with `github.com/rivo/tview` (`internal/tui`); one `*tview.Application`, screens composed via
-`Pages`. All data flows through `internal/db` repositories — no bbolt or business logic in handlers.
-Slow work runs off the event loop and mutations come back via `QueueUpdateDraw`.
+Built with `github.com/rivo/tview` (`internal/tui`); one `*tview.Application`. The whole UI is a
+single `SetRoot` of the shared **sidebar · body · status** skeleton (see
+`.claude/rules/tui-rules.md` "Product design standards"). All data flows through `internal/db`
+repositories — no bbolt or business logic in handlers. Slow work runs off the event loop and
+mutations come back via `QueueUpdateDraw`.
 
-### Screens
+### Layout
+
+```
+┌──────────┬──────────────────────────────┐
+│ SIDEBAR  │ HEADER (section title · count)│
+│ 1 …  ●   │──────────────────────────────│
+│ 2 …      │ BODY  (Pages — swappable)     │
+│ 3 …      │  list  |  detail   (split)    │
+├──────────┴──────────────────────────────┤
+│ row 2 of 7   ✓ saved             ? help  │
+└──────────────────────────────────────────┘
+```
+
+- **Sidebar** (left, fixed width; `Ctrl-B` collapses; auto-collapses on narrow terminals): the
+  numbered navigation menu and the app's home — there is no separate home screen. It lists the four
+  sections, each with a numeric shortcut and a record-count badge; the active section is highlighted.
+- **Body** (right): a header line (section title · record count) above a `Pages` container whose
+  visible page is the current section. Create/edit forms open **full-screen** here; modals layer over
+  it. Entity sections are a **master-detail split** — a `Table` on the left, a detail pane on the
+  right that tracks the highlighted row.
+- **Status bar** (bottom, three zones): **context** (`row x of y`, `(filtered)`, `· n selected`) ·
+  transient **message/spinner** (async outcomes land here as `✓`/`✗`) · **key hints** ending in
+  `? help`.
+
+### Sections
 
 1. **Dashboard** — read-only pipeline summary: deal count + value per stage (grouped by currency)
-   and lead counts by status (UC-18). Landing screen.
-2. **Leads** — a `Table` of leads (status-filterable). Enter opens a detail/edit **Form**; actions:
-   `n` new, edit on Enter, `c` **convert** (opens a small form: make-deal? title/value/currency),
-   `d` delete, `f` cycle status filter (UC-1,2,4,5,6).
-3. **Contacts** — a `Table` of contacts. Enter opens detail/edit Form; `n` new, `d` delete
-   (cascade, with a confirm `Modal` listing affected deals). A contact's deals are listed in its
-   detail view (UC-7,8,10,11,12).
-4. **Deals** — a `Table` of deals (stage-filterable). Enter opens detail/edit Form; `n` new (pick
-   contact), `s` change **stage**, `d` delete, `f` cycle stage filter (UC-13,14,16,17).
+   and lead counts by status (UC-18). The landing section.
+2. **Leads** — master-detail of leads; `n` new, `e`/Enter edit, `c` **convert** (form: make-deal?
+   title/value/currency), `d` delete (UC-1,2,4,5,6).
+3. **Contacts** — master-detail of contacts; `n` new, `e`/Enter edit, `d` delete (cascade, with a
+   confirm modal naming the affected deals). The detail pane lists the contact's deals
+   (UC-7,8,10,11,12).
+4. **Deals** — master-detail of deals; `n` new, `e`/Enter edit, `s` change **stage** (modal), `d`
+   delete (UC-13,14,16,17).
 
-### Navigation map
+Every list supports `/` incremental **case-insensitive filter** across the visible columns, `Space`
+**multi-select** with batch actions, `r` reload, and renders one of the mandatory
+**loading / empty / error** states (never blank). Lists show relative timestamps (`2h ago`); the
+detail pane shows absolute ones. Missing values render as a dim em-dash.
 
-```
-        ┌──────────── global keys (app.SetInputCapture) ────────────┐
-        │  F1 Dashboard · F2 Leads · F3 Contacts · F4 Deals · q/Ctrl-C quit │
-        └───────────────────────────────────────────────────────────┘
- [Dashboard] ⇄ [Leads] ⇄ [Contacts] ⇄ [Deals]      (Pages: SwitchToPage)
-      Leads:    table ──Enter──▶ lead form ──Esc──▶ table
-                table ──'c'────▶ convert form ──submit──▶ table (+ new contact/deal)
-   Contacts:    table ──Enter──▶ contact form (+its deals) ──Esc──▶ table
-                table ──'d'────▶ confirm Modal ──▶ cascade delete
-      Deals:    table ──Enter──▶ deal form ──Esc──▶ table
-                table ──'s'────▶ stage picker (modal) ──Esc/Cancel──▶ table
-```
+### Keys (no F-keys)
 
-Quit: `Ctrl-C` quits from anywhere. `q` quits from any table and from the button-only **modals**
-(stage picker, delete confirm), which have no text entry. Inside the text **forms** `q` is normal
-input, so the way back is `Esc` (or the Cancel button); their title shows "Esc cancels". Header rows
-are fixed; row-0 selection is guarded.
+Shared vocabulary: `1`–`4` jump to a section; `↑↓` / `j k` move; `Enter` open/confirm; `Esc`
+back / cancel / clear-filter; `Ctrl-B` toggle sidebar; `Tab` cycle sidebar↔table↔detail; `/` filter;
+`Space` toggle row select; `n`/`e`/`d`/`r` row actions; `c` convert (Leads), `s` stage (Deals);
+`Ctrl-S` save (forms); `?` help overlay; `q` / `Ctrl-C` quit. Single letters act while a list is
+focused; Ctrl-chords act in forms/inputs so typing never fires an action.
+
+### Forms & confirmation
+
+Create/edit forms are full-screen in the body, one field per row, reused for create and edit (edit
+pre-fills). Validation is **live and per-field** — an inline `[red]` error appears beneath an
+offending field and `Ctrl-S` is blocked while any field is invalid (it focuses the first offender).
+`Esc` cancels, prompting `Discard changes? [y/N]` when the form is dirty. Destructive actions confirm
+via a centered modal whose focus **defaults to the safe choice (Cancel)** and which names the target
+and warns it cannot be undone; `y` / Enter-on-Yes confirms, `n` / `Esc` cancels. A batch delete names
+the count.
+
+Quit: `q` / `Ctrl-C` quit from a top-level list or a button-only modal (stage picker, confirm), which
+have no text entry. A dirty form or an in-flight write prompts a confirm first. Inside a text form
+`q` is normal input — `Esc` (with the discard prompt) backs out. Header rows are fixed; row-0
+selection is guarded. Below 80×24 the UI shows a centered "Terminal too small" notice until resized.
 
 ## Acceptance Criteria
 
@@ -363,8 +396,11 @@ are fixed; row-0 selection is guarded.
 - **MCP:** each tool is reachable through an in-process client; input/business errors come back as
   tool-error results (not transport errors); resources return the right record for a valid ID and a
   not-found error otherwise; logs never touch stdout.
-- **TUI:** all four screens render via a `SimulationScreen`; global keys switch pages and quit; the
-  convert action and the cascade-delete confirm modal work; no DB call runs on the event loop.
+- **TUI:** all four sections render via a `SimulationScreen`; numeric keys (`1`–`4`) switch sections
+  and `q` quits; the `?` help overlay opens and closes; `/` filtering narrows a list and `Esc` clears
+  it; a create form blocks `Ctrl-S` while a required field is empty and saves once valid; the convert
+  action, the stage-picker modal, and the cascade-delete confirm modal work; no DB call runs on the
+  event loop.
 - **Concurrency:** opening the bbolt file fails fast (via `Timeout`) if another instance holds the
   lock, proving the single-writer / alternate-mode contract.
 
@@ -380,6 +416,10 @@ are fixed; row-0 selection is guarded.
   (contact deletes cascade to deals).
 - **No tasks / no activity log:** "what's next" and "what was said" are captured only in freeform
   `notes`. A Task entity and/or an Interactions log are explicit later candidates.
+- **TUI view-state persistence deferred:** the shared design language calls for persisting the last
+  active section and the sidebar collapsed/expanded state in a `Config` singleton. v1 does **not**
+  persist these — the app always opens on the Dashboard with the sidebar expanded. Adding a UI-state
+  config store (kept separate from domain data) is a later candidate and a spec change.
 - **Lead email not indexed:** only Contact email is indexed in v1; lead email search (if ever needed)
   would be a primary-bucket scan.
 - **Mode selection:** assumed the binary picks TUI vs. MCP at launch (e.g. a flag/subcommand or env

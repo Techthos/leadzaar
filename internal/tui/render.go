@@ -8,55 +8,183 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/techthos/microapp-crm/internal/models"
 )
 
-// Column headers for each list screen.
+// col describes a table column: its header and whether it holds numbers (which
+// are right-aligned per the shared design language).
+type col struct {
+	title string
+	right bool
+}
+
+// Column layouts for each list screen. Numbers are right-aligned; the trailing
+// "Updated" column shows a relative timestamp (absolute lives in the detail).
 var (
-	leadHeader    = []string{"ID", "Name", "Company", "Email", "Status", "Source"}
-	contactHeader = []string{"ID", "Name", "Company", "Email", "Phone"}
-	dealHeader    = []string{"ID", "Title", "Contact", "Value", "Cur", "Stage"}
+	leadCols = []col{
+		{"ID", true},
+		{"Name", false},
+		{"Company", false},
+		{"Email", false},
+		{"Status", false},
+		{"Source", false},
+		{"Updated", false},
+	}
+	contactCols = []col{
+		{"ID", true},
+		{"Name", false},
+		{"Company", false},
+		{"Email", false},
+		{"Phone", false},
+		{"Updated", false},
+	}
+	dealCols = []col{
+		{"ID", true},
+		{"Title", false},
+		{"Contact", true},
+		{"Value", true},
+		{"Cur", false},
+		{"Stage", false},
+		{"Updated", false},
+	}
 )
 
-// leadRows renders leads as table cells (header row first). Pure: no tview.
-func leadRows(leads []models.Lead) [][]string {
-	rows := [][]string{leadHeader}
-	for _, l := range leads {
-		rows = append(rows, []string{
-			strconv.FormatUint(l.ID, 10), l.Name, l.Company, l.Email,
-			string(l.Status), string(l.Source),
-		})
+// leadCells renders one lead as a table row (column order matches leadCols).
+func leadCells(l models.Lead) []string {
+	return []string{
+		strconv.FormatUint(l.ID, 10), dash(l.Name), dash(l.Company),
+		dash(l.Email), string(l.Status), dashSource(l.Source), relTime(l.UpdatedAt),
 	}
-	return rows
 }
 
-// contactRows renders contacts as table cells (header row first).
-func contactRows(contacts []models.Contact) [][]string {
-	rows := [][]string{contactHeader}
-	for _, c := range contacts {
-		rows = append(rows, []string{
-			strconv.FormatUint(c.ID, 10), c.Name, c.Company, c.Email, c.Phone,
-		})
+func contactCells(c models.Contact) []string {
+	return []string{
+		strconv.FormatUint(c.ID, 10), dash(c.Name), dash(c.Company),
+		dash(c.Email), dash(c.Phone), relTime(c.UpdatedAt),
 	}
-	return rows
 }
 
-// dealRows renders deals as table cells (header row first).
-func dealRows(deals []models.Deal) [][]string {
-	rows := [][]string{dealHeader}
+func dealCells(d models.Deal) []string {
+	return []string{
+		strconv.FormatUint(d.ID, 10), dash(d.Title), strconv.FormatUint(d.ContactID, 10),
+		formatMoney(d.Value), dash(d.Currency), string(d.Stage), relTime(d.UpdatedAt),
+	}
+}
+
+// leadDetail renders the full lead record for the detail pane (absolute
+// timestamps, dim em-dash for missing values, field order matching the form).
+func leadDetail(l models.Lead) string {
+	var b strings.Builder
+	field(&b, "Name", l.Name)
+	field(&b, "Company", l.Company)
+	field(&b, "Email", l.Email)
+	field(&b, "Phone", l.Phone)
+	field(&b, "Source", string(l.Source))
+	field(&b, "Status", string(l.Status))
+	field(&b, "Notes", l.Notes)
+	if l.Status == models.StatusConverted {
+		field(&b, "Contact ID", uintField(l.ContactID))
+		field(&b, "Deal ID", uintField(l.DealID))
+	}
+	b.WriteString("\n")
+	field(&b, "Created", absTime(l.CreatedAt))
+	field(&b, "Updated", absTime(l.UpdatedAt))
+	return b.String()
+}
+
+// contactDetail renders a contact plus its deals (UC-12).
+func contactDetail(c models.Contact, deals []models.Deal) string {
+	var b strings.Builder
+	field(&b, "Name", c.Name)
+	field(&b, "Company", c.Company)
+	field(&b, "Email", c.Email)
+	field(&b, "Phone", c.Phone)
+	field(&b, "Notes", c.Notes)
+	b.WriteString("\n[::b]Deals[::-]\n")
+	if len(deals) == 0 {
+		b.WriteString("  [gray]— none —[-]\n")
+	}
 	for _, d := range deals {
-		rows = append(rows, []string{
-			strconv.FormatUint(d.ID, 10), d.Title, strconv.FormatUint(d.ContactID, 10),
-			formatMoney(d.Value), d.Currency, string(d.Stage),
-		})
+		fmt.Fprintf(&b, "  #%d %s — %s %s [gray](%s)[-]\n",
+			d.ID, d.Title, dash(d.Currency), formatMoney(d.Value), d.Stage)
 	}
-	return rows
+	b.WriteString("\n")
+	field(&b, "Created", absTime(c.CreatedAt))
+	field(&b, "Updated", absTime(c.UpdatedAt))
+	return b.String()
+}
+
+func dealDetail(d models.Deal) string {
+	var b strings.Builder
+	field(&b, "Title", d.Title)
+	field(&b, "Contact ID", uintField(d.ContactID))
+	field(&b, "Value", formatMoney(d.Value))
+	field(&b, "Currency", d.Currency)
+	field(&b, "Stage", string(d.Stage))
+	field(&b, "Notes", d.Notes)
+	b.WriteString("\n")
+	field(&b, "Created", absTime(d.CreatedAt))
+	field(&b, "Updated", absTime(d.UpdatedAt))
+	return b.String()
+}
+
+// field writes a "Label: value" detail line, dimming missing values to em-dash.
+func field(b *strings.Builder, label, value string) {
+	fmt.Fprintf(b, "[::b]%-11s[::-] %s\n", label+":", dash(value))
+}
+
+// dash returns s, or a dim em-dash when s is empty — never blank, never null.
+func dash(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "[gray]—[-]"
+	}
+	return s
+}
+
+func dashSource(s models.Source) string { return dash(string(s)) }
+
+func uintField(id uint64) string {
+	if id == 0 {
+		return ""
+	}
+	return strconv.FormatUint(id, 10)
 }
 
 // formatMoney renders a monetary value with two decimals.
 func formatMoney(v float64) string {
 	return strconv.FormatFloat(v, 'f', 2, 64)
+}
+
+// absTime renders an absolute timestamp for detail panes.
+func absTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.Format("2006-01-02 15:04")
+}
+
+// relTime renders a timestamp relative to now for list cells.
+func relTime(t time.Time) string {
+	if t.IsZero() {
+		return "[gray]—[-]"
+	}
+	return relSince(time.Since(t))
+}
+
+// relSince renders a duration as a compact relative label (pure, for testing).
+func relSince(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	}
 }
 
 // sourceOptions lists lead-source dropdown choices (blank = unset, allowed).

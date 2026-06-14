@@ -1,5 +1,5 @@
 ---
-description: Rules and conventions for the rivo/tview terminal UI layer — the Application, primitives, layout, and the concurrency model that keeps the screen race-free.
+description: Rules and conventions for the rivo/tview terminal UI layer — the Application, primitives, the concurrency model that keeps the screen race-free, and the cross-app product design standards (layout, navigation, tables, CRUD, forms, filters) every micro-app TUI must follow.
 paths:
   - internal/tui/**
 ---
@@ -157,6 +157,179 @@ enabling it defeats the point.
   `[fg:bg:attrs:url]` (e.g. `[red]`, `[yellow:blue]`, `[::b]bold[::-]`, `[-:-:-:-]` full reset).
   Escape a literal tag with a trailing `[` : `[red[]` prints `[red]`.
 
+# Product design standards (every micro-app TUI)
+
+The rules above are about tview mechanics. The rules below are the **shared product design
+language** — the layout, navigation, CRUD flow, and visual conventions that every micro-app built
+from this template must follow so they all feel like the same family. Deviate only with a reason,
+and when you do, keep the deviation local and documented. These describe **observable behavior**, so
+changes here travel with `docs/SPECIFICATIONS.md` (see `specification-rules.md`).
+
+## App skeleton: sidebar · body · status bar
+
+Every app is one `Flex` with three regions, set as the single `SetRoot`:
+
+```
+┌──────────┬──────────────────────────────┐
+│ SIDEBAR  │ HEADER (screen title · count) │
+│ 1 …  ●   │──────────────────────────────│
+│ 2 …      │ BODY  (Pages — swappable)     │
+│ 3 …      │                               │
+├──────────┴──────────────────────────────┤
+│ context · 2 of 3   message/spinner   ? help │
+└──────────────────────────────────────────┘
+```
+
+- **Sidebar** (left, fixed width): the navigation menu and the app's "home" — there is **no
+  separate home screen**. It lists the top-level sections, each with a **numeric shortcut** and an
+  optional **count + attention badge**. The active section is highlighted.
+- **Body** (right, flexible): a **`Pages`** container whose visible page is the current screen.
+  Swap *content* by switching pages — never call `SetRoot` again.
+- **Status bar** (bottom, one line, three zones, left→right):
+  1. **context** — `Catalog · 2 of 3` or `row 2 of 3`;
+  2. **message/progress** — transient spinner or colored result (this is where async outcomes land);
+  3. **key hints** — the few most relevant keys for the focused screen, always ending in `? help`.
+
+## Navigation
+
+- The **sidebar is the numbered menu.** Pressing **`1`–`9`** anywhere (outside a text input) jumps to
+  that section and loads it in the body. `↑/↓` + `Enter` while the sidebar is focused also selects.
+- **`Ctrl-B`** toggles the sidebar collapsed/expanded.
+- **`Esc` backs out one level** within a section: form → list, detail → list, and from a top-level
+  list it does nothing (you're already home). Drilling in is a `Pages` push; `Esc` pops.
+
+## Keybindings (no F-keys — ever)
+
+Context-sensitive: **single letters act while a list/table is focused; Ctrl-chords act while a form
+or text input is focused** (so typing never fires an action). Use **numbers, not F-keys**, for
+selection and shortcuts. The shared vocabulary — keep it identical across apps:
+
+| Key | Meaning | Active where |
+|---|---|---|
+| `↑ ↓` / `j k` | move selection | lists/tables |
+| `Enter` | open / confirm | everywhere |
+| `Esc` | back / cancel | everywhere |
+| `1`–`9` | jump to section | global (not in inputs) |
+| `Ctrl-B` | toggle sidebar | global |
+| `/` | filter | lists/tables |
+| `?` | help overlay | everywhere |
+| `q` / `Ctrl-C` | quit | top level |
+| `n` | new (create) | lists |
+| `e` | edit | lists |
+| `d` | delete | lists |
+| `r` | refresh / reload | lists |
+| `Space` | toggle row select | lists |
+| `Ctrl-S` | save | forms |
+
+Always surface the active keys in the status bar, and the **full** set via the `?` overlay.
+
+## Tables (the primary browse view)
+
+- **Frozen bold header** (`SetFixed(1, 0)`), **full-row selection** (`SetSelectable(true, false)`),
+  text columns left-aligned, **numbers right-aligned**. Guard against selecting the header row 0.
+- `Enter` opens the record (see Detail); `n/e/d/r` are the row actions; `/` filters; `Space`
+  toggles multi-select.
+- Show **`x of y`** in the status-bar context zone.
+- **Truncate** overflowing cells with a trailing `…` (full value lives in the detail pane). Never
+  horizontal-scroll a table by default.
+- For large/streamed data use the virtual `TableContent` interface (see above) — never `SetCell`
+  unbounded rows.
+
+### Multi-select & bulk actions
+
+- `Space` toggles a per-row checkmark. An action key then applies to **all checked rows**, with a
+  **single batch confirm naming the count** (`Delete 2 items? [y/N]`).
+- If **nothing is checked**, the action targets the **highlighted row**.
+
+### Filtering
+
+- `/` focuses an incremental filter bound to the table; typing narrows rows **live**,
+  **case-insensitive substring across the visible columns**.
+- `Esc` clears the filter and refocuses the table. The status context reads `1 of 3 (filtered)`.
+- Filters are **never persisted** — they always start empty.
+
+## CRUD actions & confirmation
+
+- **Direct keys, immediate effect.** `n` → create form, `e` → edit form, `Enter` → detail,
+  `d` → delete, `r` → refresh. Non-destructive actions act immediately.
+- **Confirm only destructive/irreversible actions.** Use a centered `Modal` over the body whose
+  **focus defaults to the safe choice (`No`/Cancel)**, names the exact target, and warns when it
+  "cannot be undone". `y`/`Enter`-on-Yes confirms; `n`/`Esc` cancels.
+- High-risk, wide-blast actions (reset-all, delete-all) additionally **require typing a confirm
+  word** to enable `Yes`. Ordinary single/bulk deletes stay a simple Yes/No.
+
+## Forms (create & edit)
+
+- **Full-screen** in the body, **one field per row** with aligned labels. Reuse **one constructor**
+  for create and edit; edit pre-fills the fields.
+- **`Ctrl-S` saves; `Esc` cancels** (prompt `Discard changes? [y/N]` if the form is dirty).
+- **Validate live, per field**: show the error inline beneath the field in `[red]`, and **disable
+  save while any field is invalid**. On a blocked save attempt, focus the first offending field.
+
+## Detail view (master-detail split)
+
+- Selecting a row shows its record in a **right-hand detail pane within the same screen** (list
+  left, detail right) — not a separate navigation step. Field order matches the form.
+- Record actions (`e` edit, `d` delete) are available from the detail pane.
+- Long values **wrap and scroll** (arrow keys when the pane is focused); cells elsewhere truncate.
+
+## States: loading · empty · error (mandatory, no blank screens)
+
+Every data view must handle all three with a **centered message**:
+
+- **Loading** — `Loading…` / spinner.
+- **Empty** — a message **plus the action hint** (`No installs yet — press n`).
+- **Error** — a `[red]` message **plus a retry hint** (`press r to retry`). Never panic; surface it.
+
+## Async feedback
+
+- Run slow work in a goroutine; show a **spinner / `working…`** in the status-bar message zone,
+  then a colored result there (`[green]✓ …` / `[red]✗ …`). `QueueUpdateDraw` the small mutation
+  back per the concurrency rules above. Errors land in the status bar, never as a panic.
+
+## Focus & tab order
+
+- On entering a screen, focus the **primary body widget (table)** — not the sidebar.
+- `Tab`/`Shift-Tab` cycle the focusable regions in a defined order (sidebar ↔ table ↔ detail pane).
+- Returning from a form or detail **restores the prior row selection and focus**.
+
+## Quit
+
+- `q` / `Ctrl-C` quit from a top-level list/section. `Esc` backs out one level first.
+- Quitting with a **dirty form or an in-flight operation prompts a confirm**; otherwise exit
+  immediately.
+
+## Color & markup semantics
+
+Set one `tview.Theme` at startup; use a **fixed semantic vocabulary** everywhere (don't hard-code
+colors that fight the theme):
+
+- `[green]` success / installed / healthy
+- `[red]` error / destructive
+- `[yellow]` warning / update-available / attention
+- gray / dim — disabled, placeholder, empty
+- default — normal
+
+## Value formatting
+
+- **Timestamps**: relative in lists (`2h ago`, `3d ago`), absolute on the detail pane.
+- **Numbers**: right-aligned.
+- **Empty/missing**: a dim **`—`** — never blank, never `null`.
+
+## Responsive layout
+
+- Target a **minimum of 80×24**. On resize, the layout **reflows**.
+- Below a width threshold, **auto-collapse the sidebar** (still toggleable with `Ctrl-B`) and stack
+  the master-detail split (or push detail to its own screen).
+- Below the hard minimum, show a centered **`Terminal too small — need 80×24`** until resized.
+
+## Persisted UI state
+
+- Persist only lightweight view preferences — **last active section** and **sidebar
+  collapsed/expanded** — in the app's **`Config` singleton** (never mixed with domain data) so the
+  app reopens where you left off.
+- **Filters and row selection are never persisted** — they always start fresh.
+
 ## Do / Don't
 
 - ✅ Own one `Application`; return `Run()`'s error up the stack.
@@ -170,3 +343,10 @@ enabling it defeats the point.
   `TextView` via `io.Writer`.
 - ❌ Don't block the event loop with I/O, DB, or network calls.
 - ❌ Don't `panic` on UI errors in library code; surface them to the caller or a status widget.
+- ✅ Follow the shared design language: sidebar·body·status skeleton, numbered sections, letters in
+  lists / Ctrl in forms, the three mandatory data states, and the semantic color vocabulary.
+- ✅ Default destructive-action confirms to the safe choice and name the target.
+- ❌ Don't use F-keys — use numbers for selection and shortcuts.
+- ❌ Don't render a blank screen — every data view shows loading, empty, or error.
+- ❌ Don't invent per-app key meanings that clash with the shared vocabulary (`n/e/d/r`, `/`, `?`,
+  `Esc`, `Ctrl-S`).

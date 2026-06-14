@@ -3,42 +3,55 @@ package tui
 import (
 	"fmt"
 
-	"github.com/gdamore/tcell/v2"
-	"github.com/rivo/tview"
 	"github.com/techthos/microapp-crm/internal/models"
 )
 
-// newContactsScreen builds the contacts table and key handling (UC-7,8,10,11).
-func (t *tui) newContactsScreen() *tview.Table {
-	table := newListTable("Contacts — n new · enter edit · d delete")
-	table.SetSelectedFunc(func(row, _ int) {
-		if c, ok := t.selectedContact(row); ok {
-			t.showContactForm(&c)
-		}
+// newContactsScreen builds the contacts master-detail screen (UC-7,8,10,11). The
+// detail pane lists each contact's deals (UC-12).
+func newContactsScreen(t *tui) *listScreen[models.Contact] {
+	return newListScreen[models.Contact](t, screenConfig[models.Contact]{
+		page:      pageContacts,
+		cols:      contactCols,
+		cells:     contactCells,
+		detail:    t.contactDetail,
+		id:        func(c models.Contact) uint64 { return c.ID },
+		emptyHint: "No contacts yet — press n to add one",
+		hints:     "n new · e edit · d delete · / filter · r reload",
+		newForm:   func() { t.showContactForm(nil) },
+		editForm:  func(c models.Contact) { t.showContactForm(&c) },
+		del:       t.deleteContacts,
 	})
-	table.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
-		row, _ := table.GetSelection()
-		switch ev.Rune() {
-		case 'n':
-			t.showContactForm(nil)
-			return nil
-		case 'd':
-			if c, ok := t.selectedContact(row); ok {
-				t.confirmDeleteContact(c)
-			}
-			return nil
-		}
-		return ev
-	})
-	return table
 }
 
-func (t *tui) selectedContact(row int) (models.Contact, bool) {
-	idx := row - 1
-	if idx < 0 || idx >= len(t.contacts) {
-		return models.Contact{}, false
+// contactDetail renders a contact and its deals; the deal read is cheap and runs
+// only when a row is highlighted.
+func (t *tui) contactDetail(c models.Contact) string {
+	deals, _ := t.store.DealsForContact(c.ID)
+	return contactDetail(c, deals)
+}
+
+// deleteContacts cascade-deletes the targeted contacts after a batch confirm
+// that names how many deals will go with them (UC-11).
+func (t *tui) deleteContacts(targets []models.Contact) {
+	var dealCount int
+	for _, c := range targets {
+		deals, _ := t.store.DealsForContact(c.ID)
+		dealCount += len(deals)
 	}
-	return t.contacts[idx], true
+	msg := confirmDeleteText("contact", len(targets), targets[0].Name)
+	if dealCount > 0 {
+		msg = fmt.Sprintf("%s\n(%d deal(s) will also be deleted)", msg, dealCount)
+	}
+	t.confirm("Delete contacts", msg, true, func() {
+		t.mutate(func() error {
+			for _, c := range targets {
+				if _, err := t.store.DeleteContact(c.ID); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+	})
 }
 
 // showContactForm opens the create/edit contact form.
@@ -49,20 +62,20 @@ func (t *tui) showContactForm(existing *models.Contact) {
 		c = *existing
 		title = "Edit Contact"
 	}
-	form := tview.NewForm()
-	form.AddInputField("Name", c.Name, 32, nil, nil)
-	form.AddInputField("Company", c.Company, 32, nil, nil)
-	form.AddInputField("Email", c.Email, 32, nil, nil)
-	form.AddInputField("Phone", c.Phone, 32, nil, nil)
-	form.AddInputField("Notes", c.Notes, 32, nil, nil)
-	form.AddButton("Save", func() {
+	f := newForm(t, title, t.closeForm)
+	f.input("Name", c.Name, required("Name"))
+	f.input("Company", c.Company, nil)
+	f.input("Email", c.Email, nil)
+	f.input("Phone", c.Phone, nil)
+	f.input("Notes", c.Notes, nil)
+	f.onSave(func(v map[string]string) {
 		base := c
-		base.Name = formText(form, "Name")
-		base.Company = formText(form, "Company")
-		base.Email = formText(form, "Email")
-		base.Phone = formText(form, "Phone")
-		base.Notes = formText(form, "Notes")
-		t.mutate(pageContacts, t.contactsTable, func() error {
+		base.Name = v["Name"]
+		base.Company = v["Company"]
+		base.Email = v["Email"]
+		base.Phone = v["Phone"]
+		base.Notes = v["Notes"]
+		t.mutate(func() error {
 			if base.ID == 0 {
 				_, err := t.store.CreateContact(base)
 				return err
@@ -71,28 +84,5 @@ func (t *tui) showContactForm(existing *models.Contact) {
 			return err
 		})
 	})
-	form.AddButton("Cancel", func() { t.closeOverlay(pageContacts, t.contactsTable) })
-	form.SetButtonsAlign(tview.AlignCenter)
-	form.SetBorder(true).SetTitle(" " + title + " · Esc cancels ")
-	form.SetCancelFunc(func() { t.closeOverlay(pageContacts, t.contactsTable) })
-	t.showOverlay(form, 52, 16)
-}
-
-// confirmDeleteContact shows a cascade-delete confirmation modal (UC-11).
-func (t *tui) confirmDeleteContact(c models.Contact) {
-	deals, _ := t.store.DealsForContact(c.ID)
-	modal := tview.NewModal().
-		SetText(fmt.Sprintf("Delete contact %q and its %d deal(s)?\nThis cannot be undone.", c.Name, len(deals))).
-		AddButtons([]string{"Delete", "Cancel"}).
-		SetDoneFunc(func(_ int, label string) {
-			if label == "Delete" {
-				t.mutate(pageContacts, t.contactsTable, func() error {
-					_, err := t.store.DeleteContact(c.ID)
-					return err
-				})
-				return
-			}
-			t.closeOverlay(pageContacts, t.contactsTable)
-		})
-	t.showModal(modal)
+	t.openForm(f)
 }

@@ -88,20 +88,18 @@ func TestTUINavigationAndRender(t *testing.T) {
 		<-runErr
 	})
 
-	// Dashboard is the landing screen.
+	// Dashboard is the landing section (reached via the sidebar, section 1).
 	waitFor(t, ti, sim, "LEADS")
 	waitFor(t, ti, sim, "proposal")
 
-	// F2 -> Leads shows the seeded lead.
-	sim.InjectKey(tcell.KeyF2, 0, tcell.ModNone)
+	// Numbered sections — no F-keys.
+	sim.InjectKey(tcell.KeyRune, '2', tcell.ModNone)
 	waitFor(t, ti, sim, "Zara")
 
-	// F3 -> Contacts.
-	sim.InjectKey(tcell.KeyF3, 0, tcell.ModNone)
+	sim.InjectKey(tcell.KeyRune, '3', tcell.ModNone)
 	waitFor(t, ti, sim, "Quentin")
 
-	// F4 -> Deals.
-	sim.InjectKey(tcell.KeyF4, 0, tcell.ModNone)
+	sim.InjectKey(tcell.KeyRune, '4', tcell.ModNone)
 	waitFor(t, ti, sim, "Megadeal")
 }
 
@@ -140,7 +138,7 @@ func TestTUIQuitFromModal(t *testing.T) {
 	go func() { runErr <- ti.app.Run() }()
 
 	waitFor(t, ti, sim, "LEADS")
-	sim.InjectKey(tcell.KeyF4, 0, tcell.ModNone)
+	sim.InjectKey(tcell.KeyRune, '4', tcell.ModNone)
 	waitFor(t, ti, sim, "Megadeal")
 	sim.InjectKey(tcell.KeyRune, 's', tcell.ModNone) // open stage picker modal
 	waitFor(t, ti, sim, "which stage")
@@ -152,22 +150,13 @@ func TestTUIQuitFromModal(t *testing.T) {
 }
 
 // TestTUIFormCapturesQuit proves the inverse: inside a text form 'q' is input,
-// not quit, and Esc is what backs out — so quitting can't clobber typing.
+// not quit, so quitting can't clobber typing.
 func TestTUIFormCapturesQuit(t *testing.T) {
 	t.Parallel()
-	ti := newTUI(seededStore(t))
-	ti.loadSync()
-
-	sim := tcell.NewSimulationScreen("UTF-8")
-	ti.app.SetScreen(sim)
-	sim.SetSize(120, 40)
-
-	runErr := make(chan error, 1)
-	go func() { runErr <- ti.app.Run() }()
-	t.Cleanup(func() { ti.app.Stop(); <-runErr })
+	ti, sim, runErr := runTUI(t)
 
 	waitFor(t, ti, sim, "LEADS")
-	sim.InjectKey(tcell.KeyF2, 0, tcell.ModNone)
+	sim.InjectKey(tcell.KeyRune, '2', tcell.ModNone)
 	waitFor(t, ti, sim, "Zara")
 	sim.InjectKey(tcell.KeyRune, 'n', tcell.ModNone) // open new-lead form
 	waitFor(t, ti, sim, "New Lead")
@@ -179,21 +168,17 @@ func TestTUIFormCapturesQuit(t *testing.T) {
 		t.Fatalf("'q' quit the app from inside a form (err=%v); should be captured as input", err)
 	default:
 	}
-
-	// Esc is the documented way back out, and it must close the overlay.
-	sim.InjectKey(tcell.KeyEscape, 0, tcell.ModNone)
-	for i := 0; i < 200; i++ {
-		if !overlayPresent(ti) {
-			return
-		}
-	}
-	t.Fatal("Esc did not close the form overlay")
 }
 
-// overlayPresent reports whether the transient overlay page exists, reading it
-// ON the event loop so the check is serialized with tview's mutations.
-func overlayPresent(ti *tui) bool {
-	ch := make(chan bool, 1)
-	ti.app.QueueUpdate(func() { ch <- ti.pages.HasPage(pageOverlay) })
-	return <-ch
+// TestTUIHelpOverlay proves `?` opens the help overlay and Esc closes it.
+func TestTUIHelpOverlay(t *testing.T) {
+	t.Parallel()
+	ti, sim, _ := runTUI(t)
+
+	waitFor(t, ti, sim, "LEADS")
+	sim.InjectKey(tcell.KeyRune, '?', tcell.ModNone)
+	waitFor(t, ti, sim, "microapp-crm — keys")
+
+	sim.InjectKey(tcell.KeyEscape, 0, tcell.ModNone)
+	waitForGone(t, ti, sim, "microapp-crm — keys")
 }

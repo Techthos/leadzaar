@@ -3,36 +3,73 @@ package tui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/techthos/microapp-crm/internal/models"
 )
 
-func TestLeadRows(t *testing.T) {
+func TestLeadCells(t *testing.T) {
 	t.Parallel()
-	leads := []models.Lead{
-		{ID: 1, Name: "Jane", Company: "Acme", Email: "j@x.io", Status: models.StatusNew, Source: models.SourceWeb},
-	}
-	rows := leadRows(leads)
-	if len(rows) != 2 {
-		t.Fatalf("rows = %d, want 2 (header + 1)", len(rows))
-	}
-	if rows[0][0] != "ID" || rows[0][4] != "Status" {
-		t.Errorf("unexpected header: %v", rows[0])
-	}
-	if rows[1][0] != "1" || rows[1][1] != "Jane" || rows[1][4] != "new" {
-		t.Errorf("unexpected row: %v", rows[1])
+	row := leadCells(models.Lead{
+		ID: 1, Name: "Jane", Company: "Acme", Email: "j@x.io",
+		Status: models.StatusNew, Source: models.SourceWeb,
+	})
+	if row[0] != "1" || row[1] != "Jane" || row[4] != "new" || row[5] != "web" {
+		t.Errorf("unexpected lead cells: %v", row)
 	}
 }
 
-func TestContactAndDealRows(t *testing.T) {
+func TestContactAndDealCells(t *testing.T) {
 	t.Parallel()
-	crows := contactRows([]models.Contact{{ID: 2, Name: "Ada", Phone: "555"}})
-	if crows[1][0] != "2" || crows[1][1] != "Ada" || crows[1][4] != "555" {
-		t.Errorf("contact row: %v", crows[1])
+	crow := contactCells(models.Contact{ID: 2, Name: "Ada", Phone: "555"})
+	if crow[0] != "2" || crow[1] != "Ada" || crow[4] != "555" {
+		t.Errorf("contact cells: %v", crow)
 	}
-	drows := dealRows([]models.Deal{{ID: 3, Title: "Big", ContactID: 2, Value: 1500, Currency: "EUR", Stage: models.StageWon}})
-	if drows[1][0] != "3" || drows[1][3] != "1500.00" || drows[1][5] != "won" {
-		t.Errorf("deal row: %v", drows[1])
+	drow := dealCells(models.Deal{ID: 3, Title: "Big", ContactID: 2, Value: 1500, Currency: "EUR", Stage: models.StageWon})
+	if drow[0] != "3" || drow[3] != "1500.00" || drow[5] != "won" {
+		t.Errorf("deal cells: %v", drow)
+	}
+}
+
+func TestDashFormatsMissingValues(t *testing.T) {
+	t.Parallel()
+	if got := dash(""); !strings.Contains(got, "—") {
+		t.Errorf("dash(empty) = %q, want an em-dash placeholder", got)
+	}
+	if got := dash("x"); got != "x" {
+		t.Errorf("dash(x) = %q, want passthrough", got)
+	}
+}
+
+func TestRelSince(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		in   time.Duration
+		want string
+	}{
+		{"seconds", 5 * time.Second, "just now"},
+		{"minutes", 3 * time.Minute, "3m ago"},
+		{"hours", 2 * time.Hour, "2h ago"},
+		{"days", 49 * time.Hour, "2d ago"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := relSince(tc.in); got != tc.want {
+				t.Errorf("relSince(%v) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLeadDetailShowsFields(t *testing.T) {
+	t.Parallel()
+	out := leadDetail(models.Lead{Name: "Jane", Status: models.StatusNew})
+	for _, want := range []string{"Name:", "Jane", "Status:", "new", "Created:"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("lead detail missing %q in:\n%s", want, out)
+		}
 	}
 }
 

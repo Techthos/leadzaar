@@ -1,49 +1,48 @@
 package tui
 
 import (
-	"strconv"
-
 	"github.com/gdamore/tcell/v2"
-	"github.com/rivo/tview"
 	"github.com/techthos/microapp-crm/internal/models"
 )
 
-// newDealsScreen builds the deals table and key handling (UC-13,14,16,17).
-func (t *tui) newDealsScreen() *tview.Table {
-	table := newListTable("Deals — n new · enter edit · s stage · d delete")
-	table.SetSelectedFunc(func(row, _ int) {
-		if d, ok := t.selectedDeal(row); ok {
-			t.showDealForm(&d)
-		}
-	})
-	table.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
-		row, _ := table.GetSelection()
-		switch ev.Rune() {
-		case 'n':
-			t.showDealForm(nil)
-			return nil
-		case 's':
-			if d, ok := t.selectedDeal(row); ok {
-				t.showStagePicker(d)
+// newDealsScreen builds the deals master-detail screen (UC-13,14,16,17). Beyond
+// the shared keys it adds `s` to change the highlighted deal's stage.
+func newDealsScreen(t *tui) *listScreen[models.Deal] {
+	return newListScreen[models.Deal](t, screenConfig[models.Deal]{
+		page:      pageDeals,
+		cols:      dealCols,
+		cells:     dealCells,
+		detail:    dealDetail,
+		id:        func(d models.Deal) uint64 { return d.ID },
+		emptyHint: "No deals yet — press n to add one",
+		hints:     "n new · e edit · s stage · d delete · / filter · r reload",
+		newForm:   func() { t.showDealForm(nil) },
+		editForm:  func(d models.Deal) { t.showDealForm(&d) },
+		del:       t.deleteDeals,
+		extra: func(ev *tcell.EventKey, sel models.Deal, ok bool) *tcell.EventKey {
+			if ev.Rune() == 's' {
+				if ok {
+					t.showStagePicker(sel)
+				}
+				return nil
 			}
-			return nil
-		case 'd':
-			if d, ok := t.selectedDeal(row); ok {
-				t.mutate(pageDeals, t.dealsTable, func() error { return t.store.DeleteDeal(d.ID) })
-			}
-			return nil
-		}
-		return ev
+			return ev
+		},
 	})
-	return table
 }
 
-func (t *tui) selectedDeal(row int) (models.Deal, bool) {
-	idx := row - 1
-	if idx < 0 || idx >= len(t.deals) {
-		return models.Deal{}, false
-	}
-	return t.deals[idx], true
+// deleteDeals deletes the targeted deals after a single batch confirm.
+func (t *tui) deleteDeals(targets []models.Deal) {
+	t.confirm("Delete deals", confirmDeleteText("deal", len(targets), targets[0].Title), true, func() {
+		t.mutate(func() error {
+			for _, d := range targets {
+				if err := t.store.DeleteDeal(d.ID); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+	})
 }
 
 // showDealForm opens the create/edit deal form (UC-13,16).
@@ -56,22 +55,24 @@ func (t *tui) showDealForm(existing *models.Deal) {
 	}
 	stages := stageOptions()
 
-	form := tview.NewForm()
-	form.AddInputField("Title", d.Title, 32, nil, nil)
-	form.AddInputField("Contact ID", contactIDText(d.ContactID), 12, tview.InputFieldInteger, nil)
-	form.AddInputField("Value", formatMoney(d.Value), 16, tview.InputFieldFloat, nil)
-	form.AddInputField("Currency", d.Currency, 8, nil, nil)
-	form.AddDropDown("Stage", stages, indexOf(stages, string(d.Stage)), nil)
-	form.AddInputField("Notes", d.Notes, 32, nil, nil)
-	form.AddButton("Save", func() {
+	f := newForm(t, title, t.closeForm)
+	f.input("Title", d.Title, required("Title"))
+	f.numInput("Contact ID", uintField(d.ContactID), acceptInt, required("Contact ID"))
+	f.numInput("Value", formatMoney(d.Value), acceptFloat, nil)
+	f.input("Currency", d.Currency, nil)
+	f.dropdown("Stage", stages, indexOf(stages, string(d.Stage)))
+	f.input("Notes", d.Notes, nil)
+	// A non-zero value requires a currency (validation enforced at the store; we
+	// surface it live here so save is blocked before the round-trip).
+	f.onSave(func(v map[string]string) {
 		base := d
-		base.Title = formText(form, "Title")
-		base.ContactID = parseUint(formText(form, "Contact ID"))
-		base.Value = parseFloat(formText(form, "Value"))
-		base.Currency = formText(form, "Currency")
-		base.Stage = models.DealStage(formDropdown(form, "Stage"))
-		base.Notes = formText(form, "Notes")
-		t.mutate(pageDeals, t.dealsTable, func() error {
+		base.Title = v["Title"]
+		base.ContactID = parseUint(v["Contact ID"])
+		base.Value = parseFloat(v["Value"])
+		base.Currency = v["Currency"]
+		base.Stage = models.DealStage(v["Stage"])
+		base.Notes = v["Notes"]
+		t.mutate(func() error {
 			if base.ID == 0 {
 				_, err := t.store.CreateDeal(base)
 				return err
@@ -80,47 +81,25 @@ func (t *tui) showDealForm(existing *models.Deal) {
 			return err
 		})
 	})
-	form.AddButton("Cancel", func() { t.closeOverlay(pageDeals, t.dealsTable) })
-	form.SetButtonsAlign(tview.AlignCenter)
-	form.SetBorder(true).SetTitle(" " + title + " · Esc cancels ")
-	form.SetCancelFunc(func() { t.closeOverlay(pageDeals, t.dealsTable) })
-	t.showOverlay(form, 52, 18)
+	t.openForm(f)
 }
 
 // showStagePicker advances a deal's stage via a quick modal (UC-16).
 func (t *tui) showStagePicker(d models.Deal) {
 	stages := stageOptions()
-	modal := tview.NewModal().
-		SetText("Move deal \"" + d.Title + "\" to which stage?").
-		AddButtons(append(stages, "Cancel")).
-		SetDoneFunc(func(_ int, label string) {
+	modal := newModal("Move deal \""+d.Title+"\" to which stage?", append(stages, "Cancel"),
+		func(_ int, label string) {
 			if label == "Cancel" || label == "" {
-				t.closeOverlay(pageDeals, t.dealsTable)
+				t.closeOverlay()
 				return
 			}
+			t.closeOverlay()
 			updated := d
 			updated.Stage = models.DealStage(label)
-			t.mutate(pageDeals, t.dealsTable, func() error {
+			t.mutate(func() error {
 				_, err := t.store.UpdateDeal(updated)
 				return err
 			})
 		})
 	t.showModal(modal)
-}
-
-// contactIDText renders a contact id for an input field (blank when unset).
-func contactIDText(id uint64) string {
-	if id == 0 {
-		return ""
-	}
-	return strconv.FormatUint(id, 10)
-}
-
-// parseUint parses a contact-id input; blank/invalid is 0.
-func parseUint(s string) uint64 {
-	v, err := strconv.ParseUint(s, 10, 64)
-	if err != nil {
-		return 0
-	}
-	return v
 }

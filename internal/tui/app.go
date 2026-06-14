@@ -1,43 +1,113 @@
 package tui
 
 import (
+	"fmt"
+
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 	"github.com/techthos/microapp-crm/internal/db"
 	"github.com/techthos/microapp-crm/internal/models"
 )
 
-// Page names used with the Pages primitive.
+// Body page names. Sections are swapped by SwitchToPage; transient forms/modals
+// are layered on top.
 const (
 	pageDashboard = "dashboard"
 	pageLeads     = "leads"
 	pageContacts  = "contacts"
 	pageDeals     = "deals"
-	pageOverlay   = "overlay" // transient forms/modals
+	pageForm      = "form"    // full-screen create/edit form
+	pageOverlay   = "overlay" // centered modal / help over the body
 )
 
-// tui owns the single Application and all screen primitives. All data is pulled
-// through store; the cached slices map a selected table row to its entity.
+// Layout constants for the shared sidebar·body·status skeleton.
+const (
+	sidebarWidth         = 20
+	minWidth             = 80
+	minHeight            = 24
+	sidebarCollapseWidth = 100 // auto-collapse the sidebar below this width
+)
+
+// overlayKind tracks which transient layer (if any) currently owns input, so
+// the global key handler routes events correctly.
+type overlayKind int
+
+const (
+	ovNone overlayKind = iota
+	ovForm
+	ovModal
+	ovHelp
+)
+
+// section is one top-level navigable area (dashboard or an entity list). The tui
+// drives the shared chrome (sidebar count, header, status zones) through it.
+type section interface {
+	primitive() tview.Primitive
+	focus()
+	rowContext() string // status-bar context zone
+	keyHints() string   // status-bar key-hint zone (without "? help")
+	total() int         // record count for the sidebar badge / header
+	focusables() []tview.Primitive
+}
+
+type sectionEntry struct {
+	page  string
+	title string
+	sec   section
+}
+
+// tui owns the single Application and the whole widget tree. All data is pulled
+// through store; no bbolt access or business logic lives here.
 type tui struct {
-	app    *tview.Application
-	pages  *tview.Pages
-	store  *db.Store
-	status *tview.TextView
+	app   *tview.Application
+	store *db.Store
 
-	dashboard     *tview.TextView
-	leadsTable    *tview.Table
-	contactsTable *tview.Table
-	dealsTable    *tview.Table
+	layout *appLayout
+	middle *tview.Flex
+	right  *tview.Flex
+	body   *tview.Pages
+	header *tview.TextView
 
-	leads    []models.Lead
-	contacts []models.Contact
-	deals    []models.Deal
+	sidebar  *tview.List
+	ctxZone  *tview.TextView
+	msgZone  *tview.TextView
+	hintZone *tview.TextView
 
-	// overlayIsModal is true while the open overlay is a button-only modal
-	// (stage picker, delete confirm) rather than a text form. Modals have no
-	// text entry, so the global quit keys stay live over them; forms capture
-	// 'q' as input and are dismissed with Esc instead.
-	overlayIsModal bool
+	dash     *dashboardScreen
+	leads    *listScreen[models.Lead]
+	contacts *listScreen[models.Contact]
+	deals    *listScreen[models.Deal]
+
+	sections []sectionEntry
+	active   int
+
+	overlay     overlayKind
+	prevOverlay overlayKind
+	overlayForm *formView
+
+	sidebarCollapsed bool // manual Ctrl-B toggle
+	autoCollapsed    bool // narrow-terminal auto-collapse
+	inFlight         bool // a mutation is running off the event loop
+}
+
+// appLayout is the root primitive. It embeds the normal sidebar·body·status
+// Flex but overrides Draw to show a "terminal too small" notice below the hard
+// minimum and to auto-collapse the sidebar on narrow terminals.
+type appLayout struct {
+	*tview.Flex
+	t        *tui
+	tooSmall *tview.TextView
+}
+
+func (l *appLayout) Draw(screen tcell.Screen) {
+	_, _, w, h := l.GetRect()
+	if w < minWidth || h < minHeight {
+		l.tooSmall.SetRect(l.GetRect())
+		l.tooSmall.Draw(screen)
+		return
+	}
+	l.t.applyResponsive(w)
+	l.Flex.Draw(screen)
 }
 
 // Run builds the TUI over store and blocks until the user quits. It returns the
@@ -50,195 +120,417 @@ func Run(store *db.Store) error {
 
 // newTUI constructs the application, screens, layout, and global key handling.
 func newTUI(store *db.Store) *tui {
+	applyTheme()
 	t := &tui{
-		app:    tview.NewApplication(),
-		pages:  tview.NewPages(),
-		store:  store,
-		status: tview.NewTextView().SetDynamicColors(true),
+		app:   tview.NewApplication(),
+		store: store,
+		body:  tview.NewPages(),
 	}
 
-	t.dashboard = t.newDashboard()
-	t.leadsTable = t.newLeadsScreen()
-	t.contactsTable = t.newContactsScreen()
-	t.dealsTable = t.newDealsScreen()
+	t.header = tview.NewTextView().SetDynamicColors(true)
+	t.ctxZone = tview.NewTextView().SetDynamicColors(true)
+	t.msgZone = tview.NewTextView().SetDynamicColors(true).SetTextAlign(tview.AlignCenter)
+	t.hintZone = tview.NewTextView().SetDynamicColors(true).SetTextAlign(tview.AlignRight)
 
-	t.pages.AddPage(pageDashboard, t.dashboard, true, true)
-	t.pages.AddPage(pageLeads, t.leadsTable, true, false)
-	t.pages.AddPage(pageContacts, t.contactsTable, true, false)
-	t.pages.AddPage(pageDeals, t.dealsTable, true, false)
+	t.sidebar = tview.NewList().ShowSecondaryText(false)
+	t.sidebar.SetHighlightFullLine(true).SetBorder(true).SetTitle(" microapp-crm ")
+	t.sidebar.SetSelectedFunc(func(i int, _, _ string, _ rune) { t.switchTo(i) })
 
-	t.status.SetText(" F1 Dashboard · F2 Leads · F3 Contacts · F4 Deals · n new · enter edit · q quit ")
+	t.dash = newDashboard(t)
+	t.leads = newLeadsScreen(t)
+	t.contacts = newContactsScreen(t)
+	t.deals = newDealsScreen(t)
 
-	root := tview.NewFlex().SetDirection(tview.FlexRow).
-		AddItem(t.pages, 0, 1, true).
-		AddItem(t.status, 1, 0, false)
+	t.sections = []sectionEntry{
+		{pageDashboard, "Dashboard", t.dash},
+		{pageLeads, "Leads", t.leads},
+		{pageContacts, "Contacts", t.contacts},
+		{pageDeals, "Deals", t.deals},
+	}
+	for i, e := range t.sections {
+		t.body.AddPage(e.page, e.sec.primitive(), true, i == 0)
+		t.sidebar.AddItem(fmt.Sprintf("%d  %s", i+1, e.title), "", rune('1'+i), nil)
+	}
+
+	// Right area: header above the swappable body.
+	t.right = tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(t.header, 1, 0, false).
+		AddItem(t.body, 0, 1, true)
+
+	t.middle = tview.NewFlex()
+	t.rebuildMiddle()
+
+	statusBar := tview.NewFlex().
+		AddItem(t.ctxZone, 0, 2, false).
+		AddItem(t.msgZone, 0, 3, false).
+		AddItem(t.hintZone, 0, 3, false)
+
+	normal := tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(t.middle, 0, 1, true).
+		AddItem(statusBar, 1, 0, false)
+
+	tooSmall := tview.NewTextView().SetTextAlign(tview.AlignCenter).
+		SetText(fmt.Sprintf("\nTerminal too small — need %d×%d\n", minWidth, minHeight))
+	t.layout = &appLayout{Flex: normal, t: t, tooSmall: tooSmall}
 
 	t.app.SetInputCapture(t.globalKeys)
-	t.app.SetRoot(root, true).EnableMouse(true)
+	t.app.SetRoot(t.layout, true).EnableMouse(true).EnablePaste(true)
+	t.active = 0
+	t.sidebar.SetCurrentItem(0)
+	t.sections[0].sec.focus()
+	t.refreshChrome()
 	return t
 }
 
-// globalKeys handles page switching and quit. It is only active when no overlay
-// (form/modal) is showing, so typing in a form doesn't switch pages.
-func (t *tui) globalKeys(event *tcell.EventKey) *tcell.EventKey {
-	if t.pages.HasPage(pageOverlay) {
-		// A text form needs 'q' as input, so it owns every key (Esc cancels it).
-		// A button-only modal has no text entry, so quit stays available there.
-		if t.overlayIsModal && (event.Key() == tcell.KeyCtrlC || event.Rune() == 'q') {
-			t.app.Stop()
+// rebuildMiddle lays out sidebar + right area, honoring the collapse state.
+func (t *tui) rebuildMiddle() {
+	t.middle.Clear()
+	if !t.collapsed() {
+		t.middle.AddItem(t.sidebar, sidebarWidth, 0, false)
+	}
+	t.middle.AddItem(t.right, 0, 1, true)
+}
+
+func (t *tui) collapsed() bool { return t.sidebarCollapsed || t.autoCollapsed }
+
+// applyResponsive auto-collapses the sidebar on narrow terminals. Called from
+// the layout's Draw, so it only rebuilds on a width-threshold transition.
+func (t *tui) applyResponsive(w int) {
+	auto := w < sidebarCollapseWidth
+	if auto != t.autoCollapsed {
+		t.autoCollapsed = auto
+		t.rebuildMiddle()
+	}
+}
+
+func (t *tui) toggleSidebar() {
+	t.sidebarCollapsed = !t.sidebarCollapsed
+	t.rebuildMiddle()
+	if t.collapsed() {
+		t.sections[t.active].sec.focus()
+	} else {
+		t.app.SetFocus(t.sidebar)
+	}
+}
+
+// switchTo activates section i: shows its page, highlights the sidebar, focuses
+// its primary widget, and refreshes the chrome.
+func (t *tui) switchTo(i int) {
+	if i < 0 || i >= len(t.sections) {
+		return
+	}
+	t.active = i
+	t.body.SwitchToPage(t.sections[i].page)
+	t.sidebar.SetCurrentItem(i)
+	t.sections[i].sec.focus()
+	t.refreshChrome()
+}
+
+// globalKeys is the single app-wide input capture. It routes by overlay state,
+// so typing in a form or filter never triggers a navigation action.
+func (t *tui) globalKeys(ev *tcell.EventKey) *tcell.EventKey {
+	switch t.overlay {
+	case ovHelp:
+		if ev.Key() == tcell.KeyEscape || ev.Rune() == '?' || ev.Rune() == 'q' {
+			t.closeOverlay()
+		}
+		return nil
+	case ovForm:
+		switch ev.Key() {
+		case tcell.KeyCtrlC:
+			t.requestQuit()
+			return nil
+		case tcell.KeyCtrlS:
+			t.overlayForm.trySave()
+			return nil
+		case tcell.KeyTab:
+			t.overlayForm.focusNext()
+			return nil
+		case tcell.KeyBacktab:
+			t.overlayForm.focusPrev()
+			return nil
+		case tcell.KeyEscape:
+			t.overlayForm.cancel()
 			return nil
 		}
-		return event // let the overlay handle its own keys
+		return ev
+	case ovModal:
+		if ev.Key() == tcell.KeyCtrlC || ev.Rune() == 'q' {
+			t.requestQuit()
+			return nil
+		}
+		return ev
 	}
-	switch event.Key() {
-	case tcell.KeyF1:
-		t.show(pageDashboard, t.dashboard)
-		return nil
-	case tcell.KeyF2:
-		t.show(pageLeads, t.leadsTable)
-		return nil
-	case tcell.KeyF3:
-		t.show(pageContacts, t.contactsTable)
-		return nil
-	case tcell.KeyF4:
-		t.show(pageDeals, t.dealsTable)
+
+	// No overlay. While a filter input is focused, only the global chords act;
+	// everything else is text input.
+	if t.inTextEntry() {
+		switch ev.Key() {
+		case tcell.KeyCtrlB:
+			t.toggleSidebar()
+			return nil
+		case tcell.KeyCtrlC:
+			t.requestQuit()
+			return nil
+		}
+		return ev
+	}
+
+	switch ev.Key() {
+	case tcell.KeyCtrlB:
+		t.toggleSidebar()
 		return nil
 	case tcell.KeyCtrlC:
-		t.app.Stop()
+		t.requestQuit()
+		return nil
+	case tcell.KeyTab:
+		t.cycleFocus(1)
+		return nil
+	case tcell.KeyBacktab:
+		t.cycleFocus(-1)
 		return nil
 	}
-	if event.Rune() == 'q' {
-		t.app.Stop()
+	switch ev.Rune() {
+	case '?':
+		t.showHelp()
+		return nil
+	case 'q':
+		t.requestQuit()
 		return nil
 	}
-	return event
+	if r := ev.Rune(); r >= '1' && r <= '9' {
+		t.switchTo(int(r - '1'))
+		return nil
+	}
+	return ev
 }
 
-// show switches to a page and focuses its primitive.
-func (t *tui) show(page string, focus tview.Primitive) {
-	t.pages.SwitchToPage(page)
-	t.app.SetFocus(focus)
+// inTextEntry reports whether a text input (a filter bar) currently has focus.
+func (t *tui) inTextEntry() bool {
+	_, ok := t.app.GetFocus().(*tview.InputField)
+	return ok
 }
 
-// loadSync reads all data and fills the screens. Safe to call before Run (off
-// the event loop); for post-mutation refreshes use refreshAsync.
-func (t *tui) loadSync() {
-	leads, _ := t.store.ListLeads("")
-	contacts, _ := t.store.SearchContacts("")
-	deals, _ := t.store.ListDeals(db.DealFilter{})
-	summary, _ := t.store.PipelineSummary()
-	t.setLeads(leads)
-	t.setContacts(contacts)
-	t.setDeals(deals)
-	t.setSummary(summary)
+// cycleFocus moves focus across the regions: sidebar ↔ table ↔ detail pane.
+func (t *tui) cycleFocus(delta int) {
+	order := []tview.Primitive{}
+	if !t.collapsed() {
+		order = append(order, t.sidebar)
+	}
+	order = append(order, t.sections[t.active].sec.focusables()...)
+	if len(order) == 0 {
+		return
+	}
+	cur := t.app.GetFocus()
+	idx := 0
+	for i, p := range order {
+		if p == cur {
+			idx = i
+			break
+		}
+	}
+	idx = (idx + delta + len(order)) % len(order)
+	t.app.SetFocus(order[idx])
 }
 
-// mutate runs a store mutation off the event loop. On success it reloads all
-// data, dismisses any overlay, and focuses the given page — all on the loop. On
-// failure it flashes the error. This is the single write path for every screen,
-// keeping DB work off the event loop per the tview rules.
-func (t *tui) mutate(page string, focus tview.Primitive, op func() error) {
+// requestQuit exits, prompting first if a form is dirty or a write is mid-flight.
+func (t *tui) requestQuit() {
+	switch {
+	case t.overlay == ovForm && t.overlayForm.dirty:
+		t.confirm("Quit", "Discard changes and quit? [y/N]", false, t.app.Stop)
+	case t.inFlight:
+		t.confirm("Quit", "An operation is in progress. Quit anyway? [y/N]", false, t.app.Stop)
+	default:
+		t.app.Stop()
+	}
+}
+
+// --- chrome refresh -------------------------------------------------------
+
+// refreshChrome repaints the sidebar badges, the header, and the status context
+// and hint zones for the active section. The message zone is left untouched.
+func (t *tui) refreshChrome() {
+	for i, e := range t.sections {
+		label := fmt.Sprintf("%d  %s", i+1, e.title)
+		if n := e.sec.total(); n > 0 {
+			label = fmt.Sprintf("%d  %-9s %d", i+1, e.title, n)
+		}
+		t.sidebar.SetItemText(i, label, "")
+	}
+	active := t.sections[t.active]
+	t.header.SetText(fmt.Sprintf(" [::b]%s[::-]   %d records", active.title, active.sec.total()))
+	t.ctxZone.SetText(" " + active.sec.rowContext())
+	t.hintZone.SetText(active.sec.keyHints() + " · ? help ")
+}
+
+func (t *tui) setMessage(s string) {
+	if s == "" {
+		t.msgZone.SetText("")
+		return
+	}
+	t.msgZone.SetText(s)
+}
+
+// --- data loading & mutation ---------------------------------------------
+
+// dataSnapshot is a full read of every screen's data, gathered off the event loop.
+type dataSnapshot struct {
+	leads       []models.Lead
+	leadsErr    error
+	contacts    []models.Contact
+	contactsErr error
+	deals       []models.Deal
+	dealsErr    error
+	summary     models.PipelineSummary
+	summaryErr  error
+}
+
+// fetchAll reads everything from the store. Safe to call off the event loop.
+func (t *tui) fetchAll() dataSnapshot {
+	var s dataSnapshot
+	s.leads, s.leadsErr = t.store.ListLeads("")
+	s.contacts, s.contactsErr = t.store.SearchContacts("")
+	s.deals, s.dealsErr = t.store.ListDeals(db.DealFilter{})
+	s.summary, s.summaryErr = t.store.PipelineSummary()
+	return s
+}
+
+// applyData pushes a dataSnapshot into the screens. Runs on the event loop.
+func (t *tui) applyData(s dataSnapshot) {
+	t.leads.setItems(s.leads, s.leadsErr)
+	t.contacts.setItems(s.contacts, s.contactsErr)
+	t.deals.setItems(s.deals, s.dealsErr)
+	t.dash.set(s.summary, s.summaryErr)
+	t.refreshChrome()
+}
+
+// loadSync does the initial synchronous load before Run (off the event loop).
+func (t *tui) loadSync() { t.applyData(t.fetchAll()) }
+
+// mutate runs a store write off the event loop, then reloads and reports the
+// outcome in the status bar. On success it closes an open form. This is the
+// single write path for every screen, keeping DB work off the event loop.
+func (t *tui) mutate(op func() error) {
+	t.setMessage("[" + colorWarn + "]working…[-]")
+	t.inFlight = true
 	go func() {
 		if err := op(); err != nil {
-			t.app.QueueUpdateDraw(func() { t.flashError(err) })
+			t.app.QueueUpdateDraw(func() {
+				t.inFlight = false
+				t.setMessage("[" + colorError + "]✗ " + err.Error() + "[-]")
+			})
 			return
 		}
-		leads, _ := t.store.ListLeads("")
-		contacts, _ := t.store.SearchContacts("")
-		deals, _ := t.store.ListDeals(db.DealFilter{})
-		summary, _ := t.store.PipelineSummary()
+		data := t.fetchAll()
 		t.app.QueueUpdateDraw(func() {
-			t.setLeads(leads)
-			t.setContacts(contacts)
-			t.setDeals(deals)
-			t.setSummary(summary)
-			if t.pages.HasPage(pageOverlay) {
-				t.pages.RemovePage(pageOverlay)
-				t.overlayIsModal = false
+			t.inFlight = false
+			t.applyData(data)
+			if t.overlay == ovForm {
+				t.closeForm()
 			}
-			t.show(page, focus)
+			t.setMessage("[" + colorSuccess + "]✓ saved[-]")
 		})
 	}()
 }
 
-func (t *tui) setLeads(leads []models.Lead) {
-	t.leads = leads
-	fillTable(t.leadsTable, leadRows(leads))
+// reload re-reads all data off the event loop (the `r` action).
+func (t *tui) reload() {
+	t.setMessage("[" + colorWarn + "]reloading…[-]")
+	go func() {
+		data := t.fetchAll()
+		t.app.QueueUpdateDraw(func() {
+			t.applyData(data)
+			t.setMessage("[" + colorSuccess + "]✓ reloaded[-]")
+		})
+	}()
 }
 
-func (t *tui) setContacts(contacts []models.Contact) {
-	t.contacts = contacts
-	fillTable(t.contactsTable, contactRows(contacts))
+// --- overlays: forms, modals, help ---------------------------------------
+
+// openForm shows a full-screen form in the body (the section is hidden).
+func (t *tui) openForm(f *formView) {
+	t.overlay = ovForm
+	t.overlayForm = f
+	t.body.AddPage(pageForm, f.root, true, false)
+	t.body.SwitchToPage(pageForm)
+	t.app.SetFocus(f.order[0])
+	t.ctxZone.SetText(" form")
+	t.hintZone.SetText("Ctrl-S save · Esc cancel ")
+	t.setMessage("")
 }
 
-func (t *tui) setDeals(deals []models.Deal) {
-	t.deals = deals
-	fillTable(t.dealsTable, dealRows(deals))
+// closeForm tears the form down and returns to the active section.
+func (t *tui) closeForm() {
+	t.body.SwitchToPage(t.sections[t.active].page)
+	t.body.RemovePage(pageForm)
+	t.overlay = ovNone
+	t.overlayForm = nil
+	t.sections[t.active].sec.focus()
+	t.refreshChrome()
 }
 
-func (t *tui) setSummary(s models.PipelineSummary) {
-	var text string
-	for _, line := range summaryLines(s) {
-		text += line + "\n"
-	}
-	t.dashboard.SetText(text)
-}
-
-// fillTable replaces a table's contents with rows[0] as a fixed header.
-func fillTable(table *tview.Table, rows [][]string) {
-	table.Clear()
-	for r, row := range rows {
-		for c, cell := range row {
-			tc := tview.NewTableCell(cell)
-			if r == 0 {
-				tc.SetSelectable(false).SetAttributes(tcell.AttrBold)
-			}
-			table.SetCell(r, c, tc)
-		}
-	}
-}
-
-// newListTable builds a selectable table with a frozen header row.
-func newListTable(title string) *tview.Table {
-	table := tview.NewTable().SetBorders(false).SetSelectable(true, false).SetFixed(1, 0)
-	table.SetBorder(true).SetTitle(" " + title + " ")
-	table.Select(1, 0)
-	return table
-}
-
-// closeOverlay removes the transient form/modal and returns focus to page.
-func (t *tui) closeOverlay(page string, focus tview.Primitive) {
-	t.pages.RemovePage(pageOverlay)
-	t.overlayIsModal = false
-	t.show(page, focus)
-}
-
-// showOverlay layers a transient text form centered over the current page. The
-// form captures every key (so 'q' types into fields); Esc cancels it.
-func (t *tui) showOverlay(p tview.Primitive, width, height int) {
-	modal := tview.NewFlex().
-		AddItem(nil, 0, 1, false).
-		AddItem(tview.NewFlex().SetDirection(tview.FlexRow).
-			AddItem(nil, 0, 1, false).
-			AddItem(p, height, 0, true).
-			AddItem(nil, 0, 1, false), width, 0, true).
-		AddItem(nil, 0, 1, false)
-	t.overlayIsModal = false
-	t.pages.AddPage(pageOverlay, modal, true, true)
-	t.app.SetFocus(p)
-}
-
-// showModal layers a button-only modal (a menu with no text entry). Unlike a
-// form, the global quit keys ('q' / Ctrl-C) stay live over it.
-func (t *tui) showModal(modal *tview.Modal) {
-	t.overlayIsModal = true
-	t.pages.AddPage(pageOverlay, modal, true, true)
+// openModal layers a centered modal over the body, remembering the prior overlay
+// so a confirm raised from a form returns to that form on cancel.
+func (t *tui) openModal(modal tview.Primitive) {
+	t.prevOverlay = t.overlay
+	t.overlay = ovModal
+	t.body.AddPage(pageOverlay, modal, true, true)
 	t.app.SetFocus(modal)
 }
 
-// flashError shows an error in the status bar (handlers run on the event loop).
-func (t *tui) flashError(err error) {
-	if err != nil {
-		t.status.SetText(" [red]" + err.Error() + "[-] ")
+// closeOverlay removes the modal/help layer and restores focus.
+func (t *tui) closeOverlay() {
+	t.body.RemovePage(pageOverlay)
+	t.overlay = t.prevOverlay
+	t.prevOverlay = ovNone
+	if t.overlay == ovForm && t.overlayForm != nil {
+		t.app.SetFocus(t.overlayForm.order[0])
+	} else {
+		t.sections[t.active].sec.focus()
+		t.refreshChrome()
 	}
+}
+
+// confirm shows a Yes/No modal whose focus defaults to the safe choice (Cancel).
+// y / Enter-on-Yes confirms; n / Esc cancels.
+func (t *tui) confirm(_ /*title*/, message string, _ /*danger*/ bool, onYes func()) {
+	modal := tview.NewModal().
+		SetText(message).
+		AddButtons([]string{"Cancel", "Yes"})
+	modal.SetDoneFunc(func(_ int, label string) {
+		t.closeOverlay()
+		if label == "Yes" {
+			onYes()
+		}
+	})
+	modal.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
+		switch ev.Rune() {
+		case 'y', 'Y':
+			t.closeOverlay()
+			onYes()
+			return nil
+		case 'n', 'N':
+			t.closeOverlay()
+			return nil
+		}
+		return ev
+	})
+	t.openModal(modal)
+}
+
+// showModal layers an arbitrary button-only modal (e.g. the stage picker).
+func (t *tui) showModal(modal *tview.Modal) { t.openModal(modal) }
+
+// newModal builds a button-only modal with a done handler.
+func newModal(text string, buttons []string, done func(int, string)) *tview.Modal {
+	return tview.NewModal().SetText(text).AddButtons(buttons).SetDoneFunc(done)
+}
+
+// confirmDeleteText composes a delete-confirm message that names the target and
+// warns the action cannot be undone. A single target names it; a batch counts it.
+func confirmDeleteText(noun string, count int, name string) string {
+	if count == 1 {
+		return fmt.Sprintf("Delete %s %q?\nThis cannot be undone.", noun, name)
+	}
+	return fmt.Sprintf("Delete %d %ss?\nThis cannot be undone.", count, noun)
 }
