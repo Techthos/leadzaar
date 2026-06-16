@@ -23,8 +23,12 @@ func seededStore(t *testing.T) *db.Store {
 	if err != nil {
 		t.Fatalf("seed company: %v", err)
 	}
-	if _, err := store.CreateLead(models.Lead{Name: "Zara", Source: models.SourceWeb}); err != nil {
+	zara, err := store.CreateLead(models.Lead{Name: "Zara", Source: models.SourceWeb})
+	if err != nil {
 		t.Fatalf("seed lead: %v", err)
+	}
+	if _, err := store.CreateOffer(models.Offer{LeadID: zara.ID, Title: "Pilot Offer", Subject: "Intro"}); err != nil {
+		t.Fatalf("seed offer: %v", err)
 	}
 	c, err := store.CreateContact(models.Contact{Name: "Quentin", CompanyID: globex.ID})
 	if err != nil {
@@ -110,6 +114,27 @@ func TestTUINavigationAndRender(t *testing.T) {
 
 	sim.InjectKey(tcell.KeyRune, '5', tcell.ModNone)
 	waitFor(t, ti, sim, "Globex") // Companies section lists the company
+
+	sim.InjectKey(tcell.KeyRune, '6', tcell.ModNone)
+	waitFor(t, ti, sim, "Pilot Offer") // Offers section lists the seeded offer
+}
+
+// TestTUIOfferLeadNavigation proves the lead↔offer bidirectional links: from the
+// Offers section `l` follows an offer back to its lead, and on that lead `o`
+// opens a new-offer form pre-filled for it.
+func TestTUIOfferLeadNavigation(t *testing.T) {
+	t.Parallel()
+	ti, sim, _ := runTUI(t)
+
+	waitFor(t, ti, sim, "LEADS")
+	sim.InjectKey(tcell.KeyRune, '6', tcell.ModNone) // Offers section
+	waitFor(t, ti, sim, "Pilot Offer")
+
+	sim.InjectKey(tcell.KeyRune, 'l', tcell.ModNone) // follow the offer to its lead
+	// `o` only opens a new-offer form when a lead row is focused; reaching the
+	// form proves the jump landed on the Leads section.
+	sim.InjectKey(tcell.KeyRune, 'o', tcell.ModNone)
+	waitFor(t, ti, sim, "New Offer")
 }
 
 func TestTUIQuit(t *testing.T) {

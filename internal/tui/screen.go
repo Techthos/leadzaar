@@ -255,6 +255,22 @@ func (s *listScreen[T]) targets() []T {
 	return nil
 }
 
+// focusByID clears any active filter and highlights the row whose entity id
+// matches, then focuses the table. Used for cross-section navigation (e.g.
+// jumping from an offer to its lead). A no-match leaves the current selection.
+func (s *listScreen[T]) focusByID(id uint64) {
+	if s.filter != "" || s.filtering {
+		s.clearFilter()
+	}
+	for i, it := range s.view {
+		if s.cfg.id(it) == id {
+			s.table.Select(i+1, 0)
+			break
+		}
+	}
+	s.t.app.SetFocus(s.table)
+}
+
 func (s *listScreen[T]) beginFilter() {
 	s.filtering = true
 	s.rebuildData()

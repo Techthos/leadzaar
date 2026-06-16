@@ -75,8 +75,8 @@ func TestToolSurfaceRegistered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListTools: %v", err)
 	}
-	if got := len(res.Tools); got != 22 {
-		t.Errorf("registered tools = %d, want 22", got)
+	if got := len(res.Tools); got != 27 {
+		t.Errorf("registered tools = %d, want 27", got)
 	}
 }
 

@@ -84,8 +84,9 @@ func TestRelSince(t *testing.T) {
 
 func TestLeadDetailShowsFields(t *testing.T) {
 	t.Parallel()
-	out := leadDetail(models.Lead{Name: "Jane", CompanyID: 7, Tags: []string{"vip"}, Quality: 8, Status: models.StatusNew}, testCompanyName)
-	for _, want := range []string{"Name:", "Jane", "Company:", "Acme", "Tags:", "vip", "Quality:", "8", "Status:", "new", "Created:"} {
+	offers := []models.Offer{{ID: 3, LeadID: 1, Title: "Pilot", Subject: "Intro"}}
+	out := leadDetail(models.Lead{Name: "Jane", CompanyID: 7, Tags: []string{"vip"}, Quality: 8, Status: models.StatusNew}, testCompanyName, offers)
+	for _, want := range []string{"Name:", "Jane", "Company:", "Acme", "Tags:", "vip", "Quality:", "8", "Status:", "new", "Offers", "Pilot", "Created:"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("lead detail missing %q in:\n%s", want, out)
 		}

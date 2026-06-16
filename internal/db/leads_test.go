@@ -154,13 +154,13 @@ func TestDeleteLead(t *testing.T) {
 	store := openTestStore(t, newClock())
 	created, _ := store.CreateLead(models.Lead{Name: "Lead"})
 
-	if err := store.DeleteLead(created.ID); err != nil {
+	if _, err := store.DeleteLead(created.ID); err != nil {
 		t.Fatalf("DeleteLead: %v", err)
 	}
 	if _, err := store.GetLead(created.ID); !errors.Is(err, db.ErrNotFound) {
 		t.Errorf("lead survived delete: %v", err)
 	}
-	if err := store.DeleteLead(99999); !errors.Is(err, db.ErrNotFound) {
+	if _, err := store.DeleteLead(99999); !errors.Is(err, db.ErrNotFound) {
 		t.Errorf("delete unknown: err = %v, want ErrNotFound", err)
 	}
 }

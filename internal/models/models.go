@@ -53,6 +53,20 @@ type Deal struct {
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
+// Offer is an email-style proposal made to a Lead. A Lead has zero-or-more
+// Offers (1:N via OfferLeadID); deleting a Lead cascades to its Offers. Subject
+// and Body carry the raw email content (Body may be long, multi-line).
+type Offer struct {
+	ID          uint64    `json:"id"`
+	LeadID      uint64    `json:"leadId"`
+	Title       string    `json:"title"`
+	Description string    `json:"description,omitempty"`
+	Subject     string    `json:"subject,omitempty"`
+	Body        string    `json:"body,omitempty"`
+	CreatedAt   time.Time `json:"createdAt"`
+	UpdatedAt   time.Time `json:"updatedAt"`
+}
+
 // Company is an organization that Leads, Contacts, and Deals may optionally link
 // to by ID (CompanyID). Identity is the surrogate ID. Deleting a Company unlinks
 // it from any referencing records (their CompanyID is reset to 0); the records

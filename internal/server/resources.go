@@ -43,6 +43,13 @@ func (h *handlers) registerResources(s *server.MCPServer) {
 		h.readCompany,
 	)
 
+	s.AddResourceTemplate(
+		mcp.NewResourceTemplate("crm://offers/{id}", "Offer",
+			mcp.WithTemplateDescription("A single offer as JSON"),
+			mcp.WithTemplateMIMEType(mimeJSON)),
+		h.readOffer,
+	)
+
 	s.AddResource(
 		mcp.NewResource("crm://pipeline", "Pipeline summary",
 			mcp.WithResourceDescription("Funnel + pipeline aggregate as JSON"),
@@ -108,6 +115,18 @@ func (h *handlers) readCompany(_ context.Context, req mcp.ReadResourceRequest) (
 		return nil, err
 	}
 	return jsonResource(req.Params.URI, c)
+}
+
+func (h *handlers) readOffer(_ context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+	id, err := parseIDFromURI(req.Params.URI, "crm://offers/")
+	if err != nil {
+		return nil, err
+	}
+	o, err := h.store.GetOffer(id)
+	if err != nil {
+		return nil, err
+	}
+	return jsonResource(req.Params.URI, o)
 }
 
 func (h *handlers) readPipeline(_ context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {

@@ -58,6 +58,13 @@ var (
 		{"Phone", false},
 		{"Updated", false},
 	}
+	offerCols = []col{
+		{"ID", true},
+		{"Lead", true},
+		{"Title", false},
+		{"Subject", false},
+		{"Updated", false},
+	}
 )
 
 // companyName resolves a CompanyID to its name (via the tui's snapshot map),
@@ -99,9 +106,17 @@ func companyCells(c models.Company) []string {
 	}
 }
 
+func offerCells(o models.Offer) []string {
+	return []string{
+		strconv.FormatUint(o.ID, 10), strconv.FormatUint(o.LeadID, 10),
+		dash(o.Title), dash(o.Subject), relTime(o.UpdatedAt),
+	}
+}
+
 // leadDetail renders the full lead record for the detail pane (absolute
-// timestamps, dim em-dash for missing values, field order matching the form).
-func leadDetail(l models.Lead, companyName func(uint64) string) string {
+// timestamps, dim em-dash for missing values, field order matching the form),
+// plus the lead's offers so the lead↔offer link is visible from the lead side.
+func leadDetail(l models.Lead, companyName func(uint64) string, offers []models.Offer) string {
 	var b strings.Builder
 	field(&b, "Name", l.Name)
 	field(&b, "Company", companyName(l.CompanyID))
@@ -115,6 +130,13 @@ func leadDetail(l models.Lead, companyName func(uint64) string) string {
 	if l.Status == models.StatusConverted {
 		field(&b, "Contact ID", uintField(l.ContactID))
 		field(&b, "Deal ID", uintField(l.DealID))
+	}
+	b.WriteString("\n[::b]Offers[::-]\n")
+	if len(offers) == 0 {
+		b.WriteString("  [gray]— none — press o to add[-]\n")
+	}
+	for _, o := range offers {
+		fmt.Fprintf(&b, "  #%d %s [gray](%s)[-]\n", o.ID, dash(o.Title), dash(o.Subject))
 	}
 	b.WriteString("\n")
 	field(&b, "Created", absTime(l.CreatedAt))
@@ -173,6 +195,32 @@ func companyDetail(c models.Company) string {
 	field(&b, "Created", absTime(c.CreatedAt))
 	field(&b, "Updated", absTime(c.UpdatedAt))
 	return b.String()
+}
+
+// offerDetail renders an offer record for the detail pane (field order matches
+// the offer form). The long Body wraps and scrolls in the pane. leadName is the
+// resolved name of the owning lead ("" when unknown) so the offer→lead link is
+// visible from the offer side; press l to jump to it.
+func offerDetail(o models.Offer, leadName string) string {
+	var b strings.Builder
+	field(&b, "Lead", leadDisplay(o.LeadID, leadName))
+	field(&b, "Title", o.Title)
+	field(&b, "Description", o.Description)
+	field(&b, "Subject", o.Subject)
+	field(&b, "Body", o.Body)
+	b.WriteString("\n")
+	field(&b, "Created", absTime(o.CreatedAt))
+	field(&b, "Updated", absTime(o.UpdatedAt))
+	return b.String()
+}
+
+// leadDisplay formats a lead reference for an offer's detail pane: "Name (#id)"
+// when the name resolves, else just the numeric id (dimmed to em-dash if 0).
+func leadDisplay(id uint64, name string) string {
+	if name == "" {
+		return uintField(id)
+	}
+	return fmt.Sprintf("%s (#%d)", name, id)
 }
 
 // splitTags parses a comma-separated tag input into a trimmed, non-empty slice.

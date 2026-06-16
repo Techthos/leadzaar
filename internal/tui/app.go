@@ -23,6 +23,7 @@ const (
 	pageContacts  = "contacts"
 	pageDeals     = "deals"
 	pageCompanies = "companies"
+	pageOffers    = "offers"
 	pageForm      = "form"    // full-screen create/edit form
 	pageOverlay   = "overlay" // centered modal / help over the body
 )
@@ -85,6 +86,7 @@ type tui struct {
 	contacts  *listScreen[models.Contact]
 	deals     *listScreen[models.Deal]
 	companies *listScreen[models.Company]
+	offers    *listScreen[models.Offer]
 
 	// companyNames maps CompanyID→name for resolving links in lists/details,
 	// refreshed on every applyData. Read by the render closures via companyName.
@@ -161,6 +163,7 @@ func newTUI(store *db.Store) *tui {
 	t.contacts = newContactsScreen(t)
 	t.deals = newDealsScreen(t)
 	t.companies = newCompaniesScreen(t)
+	t.offers = newOffersScreen(t)
 
 	t.sections = []sectionEntry{
 		{pageDashboard, "Dashboard", t.dash},
@@ -168,6 +171,7 @@ func newTUI(store *db.Store) *tui {
 		{pageContacts, "Contacts", t.contacts},
 		{pageDeals, "Deals", t.deals},
 		{pageCompanies, "Companies", t.companies},
+		{pageOffers, "Offers", t.offers},
 	}
 	for i, e := range t.sections {
 		t.body.AddPage(e.page, e.sec.primitive(), true, i == 0)
@@ -233,6 +237,28 @@ func (t *tui) toggleSidebar() {
 	} else {
 		t.app.SetFocus(t.sidebar)
 	}
+}
+
+// sectionIndex returns the index of the section with the given page name, or -1.
+func (t *tui) sectionIndex(page string) int {
+	for i, e := range t.sections {
+		if e.page == page {
+			return i
+		}
+	}
+	return -1
+}
+
+// gotoLead jumps to the Leads section and highlights the lead with leadID,
+// clearing any active filter so the target is visible. Used by the Offers
+// section's `l` action to follow an offer back to its lead.
+func (t *tui) gotoLead(leadID uint64) {
+	i := t.sectionIndex(pageLeads)
+	if i < 0 {
+		return
+	}
+	t.switchTo(i)
+	t.leads.focusByID(leadID)
 }
 
 // switchTo activates section i: shows its page, highlights the sidebar, focuses
@@ -405,6 +431,8 @@ type dataSnapshot struct {
 	dealsErr     error
 	companies    []models.Company
 	companiesErr error
+	offers       []models.Offer
+	offersErr    error
 	summary      models.PipelineSummary
 	summaryErr   error
 }
@@ -416,6 +444,7 @@ func (t *tui) fetchAll() dataSnapshot {
 	s.contacts, s.contactsErr = t.store.SearchContacts("")
 	s.deals, s.dealsErr = t.store.ListDeals(db.DealFilter{})
 	s.companies, s.companiesErr = t.store.ListCompanies()
+	s.offers, s.offersErr = t.store.ListOffers(db.OfferFilter{})
 	s.summary, s.summaryErr = t.store.PipelineSummary()
 	return s
 }
@@ -434,6 +463,7 @@ func (t *tui) applyData(s dataSnapshot) {
 	t.contacts.setItems(s.contacts, s.contactsErr)
 	t.deals.setItems(s.deals, s.dealsErr)
 	t.companies.setItems(s.companies, s.companiesErr)
+	t.offers.setItems(s.offers, s.offersErr)
 	t.dash.set(s.summary, s.summaryErr)
 	t.refreshChrome()
 }

@@ -37,6 +37,7 @@ func New(store *db.Store, version string) *server.MCPServer {
 	h.registerContactTools(s)
 	h.registerDealTools(s)
 	h.registerCompanyTools(s)
+	h.registerOfferTools(s)
 	h.registerSummaryTool(s)
 	h.registerResources(s)
 	h.registerPrompts(s)

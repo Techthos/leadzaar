@@ -22,8 +22,10 @@ var (
 	bucketContacts       = []byte("contacts")
 	bucketDeals          = []byte("deals")
 	bucketCompanies      = []byte("companies")
+	bucketOffers         = []byte("offers")
 	bucketContactByEmail = []byte("idx_contact_by_email")
 	bucketDealByContact  = []byte("idx_deal_by_contact")
+	bucketOfferByLead    = []byte("idx_offer_by_lead")
 )
 
 // allBuckets is the full set created at startup (see migrate).
@@ -32,8 +34,10 @@ var allBuckets = [][]byte{
 	bucketContacts,
 	bucketDeals,
 	bucketCompanies,
+	bucketOffers,
 	bucketContactByEmail,
 	bucketDealByContact,
+	bucketOfferByLead,
 }
 
 // ErrNotFound is returned when a record with the requested ID does not exist.
@@ -223,5 +227,16 @@ func dealByContactIndexKey(contactID, dealID uint64) []byte {
 	key := make([]byte, 16)
 	binary.BigEndian.PutUint64(key[:8], contactID)
 	binary.BigEndian.PutUint64(key[8:], dealID)
+	return key
+}
+
+// offerByLeadIndexKey builds the composite key for idx_offer_by_lead:
+// big-endian leadID + big-endian offerID. Prefix-scanning by the leadID half
+// yields all of that lead's offers in offer-creation order; it also drives the
+// cascade delete when a lead is removed.
+func offerByLeadIndexKey(leadID, offerID uint64) []byte {
+	key := make([]byte, 16)
+	binary.BigEndian.PutUint64(key[:8], leadID)
+	binary.BigEndian.PutUint64(key[8:], offerID)
 	return key
 }

@@ -163,6 +163,69 @@ func TestCompanyToolsAndUnlink(t *testing.T) {
 	}
 }
 
+// TestOfferToolsAndLeadCascade exercises the offer CRUD tools, reads the offer
+// resource, then deletes the owning lead and verifies the cascade returns the
+// offer id and the offer is gone.
+func TestOfferToolsAndLeadCascade(t *testing.T) {
+	t.Parallel()
+	c, ctx := setup(t)
+
+	lres := callTool(t, c, ctx, "create_lead", map[string]any{"name": "Prospect"})
+	var lead models.Lead
+	mustJSON(t, lres, &lead)
+
+	ores := callTool(t, c, ctx, "create_offer", map[string]any{
+		"lead_id": lead.ID, "title": "Q3 Proposal", "subject": "Our proposal", "body": "Dear customer,\nhere is our offer.",
+	})
+	var offer models.Offer
+	mustJSON(t, ores, &offer)
+	if offer.ID == 0 || offer.LeadID != lead.ID {
+		t.Fatalf("create_offer result: %+v", offer)
+	}
+
+	for _, args := range []map[string]any{{}, {"lead_id": lead.ID}} {
+		if r := callTool(t, c, ctx, "list_offers", args); r.IsError {
+			t.Fatalf("list_offers(%v): %s", args, resultText(t, r))
+		}
+	}
+	if r := callTool(t, c, ctx, "get_offer", map[string]any{"id": offer.ID}); r.IsError {
+		t.Fatalf("get_offer: %s", resultText(t, r))
+	}
+	upd := callTool(t, c, ctx, "update_offer", map[string]any{
+		"id": offer.ID, "lead_id": lead.ID, "title": "Q3 Proposal v2", "body": "Updated body.",
+	})
+	var updatedOffer models.Offer
+	mustJSON(t, upd, &updatedOffer)
+	if updatedOffer.Title != "Q3 Proposal v2" || updatedOffer.Body != "Updated body." {
+		t.Errorf("update_offer result: %+v", updatedOffer)
+	}
+
+	// Creating an offer for a non-existent lead is a tool error.
+	if r := callTool(t, c, ctx, "create_offer", map[string]any{"lead_id": 99999, "title": "Bad"}); !r.IsError {
+		t.Errorf("create_offer with bad lead_id: expected tool error, got %s", resultText(t, r))
+	}
+
+	// Read the offer resource.
+	rreq := mcp.ReadResourceRequest{}
+	rreq.Params.URI = "crm://offers/" + itoa(offer.ID)
+	if _, err := c.ReadResource(ctx, rreq); err != nil {
+		t.Fatalf("ReadResource(offer): %v", err)
+	}
+
+	// Deleting the lead cascades to its offers.
+	del := callTool(t, c, ctx, "delete_lead", map[string]any{"id": lead.ID})
+	var payload struct {
+		DeletedOfferIDs []uint64 `json:"deleted_offer_ids"`
+	}
+	mustJSON(t, del, &payload)
+	if len(payload.DeletedOfferIDs) != 1 || payload.DeletedOfferIDs[0] != offer.ID {
+		t.Errorf("deleted_offer_ids = %v, want [%d]", payload.DeletedOfferIDs, offer.ID)
+	}
+	if r := callTool(t, c, ctx, "get_offer", map[string]any{"id": offer.ID}); !r.IsError {
+		t.Errorf("offer survived lead cascade: %s", resultText(t, r))
+	}
+}
+
 // mustJSON asserts a successful tool result and unmarshals its JSON text into v.
 func mustJSON(t *testing.T, res *mcp.CallToolResult, v any) {
 	t.Helper()

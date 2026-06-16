@@ -15,17 +15,23 @@ func newLeadsScreen(t *tui) *listScreen[models.Lead] {
 		page:      pageLeads,
 		cols:      leadCols,
 		cells:     func(l models.Lead) []string { return leadCells(l, t.companyName) },
-		detail:    func(l models.Lead) string { return leadDetail(l, t.companyName) },
+		detail:    t.leadDetail,
 		id:        func(l models.Lead) uint64 { return l.ID },
 		emptyHint: "No leads yet — press n to add one",
-		hints:     "n new · e edit · c convert · d delete · / filter · r reload",
+		hints:     "n new · e edit · c convert · o offer · d delete · / filter · r reload",
 		newForm:   func() { t.showLeadForm(nil) },
 		editForm:  func(l models.Lead) { t.showLeadForm(&l) },
 		del:       t.deleteLeads,
 		extra: func(ev *tcell.EventKey, sel models.Lead, ok bool) *tcell.EventKey {
-			if ev.Rune() == 'c' {
+			switch ev.Rune() {
+			case 'c':
 				if ok {
 					t.showConvertForm(sel)
+				}
+				return nil
+			case 'o':
+				if ok {
+					t.showOfferForm(&models.Offer{LeadID: sel.ID})
 				}
 				return nil
 			}
@@ -34,12 +40,19 @@ func newLeadsScreen(t *tui) *listScreen[models.Lead] {
 	})
 }
 
+// leadDetail renders a lead and its offers; the offer read is cheap and runs
+// only when a row is highlighted (mirrors contactDetail's per-row deal read).
+func (t *tui) leadDetail(l models.Lead) string {
+	offers, _ := t.store.OffersForLead(l.ID)
+	return leadDetail(l, t.companyName, offers)
+}
+
 // deleteLeads deletes the targeted leads after a single batch confirm.
 func (t *tui) deleteLeads(targets []models.Lead) {
 	t.confirm("Delete leads", confirmDeleteText("lead", len(targets), targets[0].Name), true, func() {
 		t.mutate(func() error {
 			for _, l := range targets {
-				if err := t.store.DeleteLead(l.ID); err != nil {
+				if _, err := t.store.DeleteLead(l.ID); err != nil {
 					return err
 				}
 			}

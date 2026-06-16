@@ -10,7 +10,7 @@ import (
 const helpText = `[::b]microapp-crm — keys[::-]
 
 [::b]Navigation[::-]
-  1–5         jump to a section (Dashboard, Leads, Contacts, Deals, Companies)
+  1–6         jump to a section (Dashboard, Leads, Contacts, Deals, Companies, Offers)
   ↑ ↓ / j k   move selection
   Tab         cycle sidebar ↔ table ↔ detail
   Ctrl-B      toggle the sidebar
@@ -23,6 +23,7 @@ const helpText = `[::b]microapp-crm — keys[::-]
 
 [::b]Per screen[::-]
   c           convert a lead        s  change a deal's stage
+  o           new offer for a lead  l  go to the offer's lead (Offers)
 
 [::b]Forms[::-]
   Ctrl-S      save         Esc  cancel (prompts if changed)

@@ -1,6 +1,7 @@
 package db
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -140,19 +141,43 @@ func (s *Store) UpdateLead(l models.Lead) (models.Lead, error) {
 	return l, nil
 }
 
-// DeleteLead removes a lead by ID (UC-6). Returns ErrNotFound if absent.
-func (s *Store) DeleteLead(id uint64) error {
+// DeleteLead removes a lead by ID and cascades to all of its offers (UC-6),
+// atomically: every offer made to the lead and those offers' idx_offer_by_lead
+// entries are removed in the same transaction. It returns the IDs of the deleted
+// offers. Returns ErrNotFound if the lead does not exist.
+func (s *Store) DeleteLead(id uint64) ([]uint64, error) {
+	var deletedOffers []uint64
 	err := s.update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketLeads)
 		if b.Get(itob(id)) == nil {
 			return ErrNotFound
 		}
+
+		// Collect the lead's offers before mutating (don't delete mid-scan).
+		offerIdx := tx.Bucket(bucketOfferByLead)
+		prefix := itob(id)
+		var idxKeys [][]byte
+		cur := offerIdx.Cursor()
+		for k, _ := cur.Seek(prefix); k != nil && bytes.HasPrefix(k, prefix); k, _ = cur.Next() {
+			deletedOffers = append(deletedOffers, btoi(k[8:]))
+			idxKeys = append(idxKeys, append([]byte(nil), k...)) // copy: key is txn-scoped
+		}
+
+		offers := tx.Bucket(bucketOffers)
+		for i, offerID := range deletedOffers {
+			if err := offers.Delete(itob(offerID)); err != nil {
+				return fmt.Errorf("delete offer %d: %w", offerID, err)
+			}
+			if err := offerIdx.Delete(idxKeys[i]); err != nil {
+				return fmt.Errorf("delete offer index for %d: %w", offerID, err)
+			}
+		}
 		return b.Delete(itob(id))
 	})
 	if err != nil {
-		return fmt.Errorf("delete lead %d: %w", id, err)
+		return nil, fmt.Errorf("delete lead %d: %w", id, err)
 	}
-	return nil
+	return deletedOffers, nil
 }
 
 // validateLeadEnums checks Source (if set) and Status against their enums, and

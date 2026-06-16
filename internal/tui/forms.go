@@ -55,9 +55,15 @@ var (
 
 // append wires a field into the form: input row, then its inline error row.
 func (f *formView) append(ff *formField) {
+	f.appendSized(ff, 1)
+}
+
+// appendSized wires a field into the form reserving height rows for the input
+// (1 for single-line fields; more for a multi-line text area).
+func (f *formView) appendSized(ff *formField, height int) {
 	f.fields = append(f.fields, ff)
 	f.order = append(f.order, ff.item)
-	f.root.AddItem(ff.item, 1, 0, len(f.fields) == 1)
+	f.root.AddItem(ff.item, height, 0, len(f.fields) == 1)
 	f.root.AddItem(ff.errTV, 1, 0, false)
 }
 
@@ -116,6 +122,15 @@ func (f *formView) companyPicker(label string, companies []models.Company, curre
 	}}
 	dd.SetSelectedFunc(func(string, int) { f.dirty = true })
 	f.append(ff)
+}
+
+// textArea adds a multi-line text field for long content (e.g. a raw email
+// body). It reserves rows lines of height; validate may be nil.
+func (f *formView) textArea(label, initial string, rows int, validate func(string) string) {
+	ta := tview.NewTextArea().SetLabel(label+": ").SetText(initial, false)
+	ff := &formField{label: label, item: ta, errTV: newErrTV(), validate: validate, value: ta.GetText}
+	ta.SetChangedFunc(func() { f.dirty = true; f.revalidate(ff) })
+	f.appendSized(ff, rows)
 }
 
 // checkbox adds a boolean field; value() reports "true"/"false".

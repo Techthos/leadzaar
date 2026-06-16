@@ -139,8 +139,9 @@ func (h *handlers) convertLead(_ context.Context, _ mcp.CallToolRequest, a conve
 }
 
 func (h *handlers) deleteLead(_ context.Context, _ mcp.CallToolRequest, a idArg) (*mcp.CallToolResult, error) {
-	if err := h.store.DeleteLead(a.ID); err != nil {
+	deletedOffers, err := h.store.DeleteLead(a.ID)
+	if err != nil {
 		return toolErr(err)
 	}
-	return jsonResult(map[string]any{"deleted": a.ID})
+	return jsonResult(map[string]any{"deleted": a.ID, "deleted_offer_ids": deletedOffers})
 }

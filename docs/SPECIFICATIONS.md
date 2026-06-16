@@ -23,8 +23,9 @@ writes, so the two stay in sync. See `docs/bbolt-concurrent-access-strategy.md`.
 
 ### Goals
 - Track the lead → contact → deal funnel for **one user** on **one machine**.
-- Provide CRUD over Leads, Contacts, and Deals, plus a lead **conversion** action and a read-only
-  **pipeline summary** (deal stages + lead funnel, value grouped by currency).
+- Provide CRUD over Leads, Contacts, Deals, and Offers (email-style proposals linked to a Lead), plus
+  a lead **conversion** action and a read-only **pipeline summary** (deal stages + lead funnel, value
+  grouped by currency).
 - Expose the model through both a **TUI** and an **MCP server**, each consuming the same repository
   layer.
 - Allow the **TUI and MCP modes to run concurrently** as separate local processes against the same
@@ -40,8 +41,12 @@ writes, so the two stay in sync. See `docs/bbolt-concurrent-access-strategy.md`.
 - ❌ **No** multi-user / team features: no accounts, ownership, assignment, or sharing.
 - ❌ **No** currency conversion / FX (there is no network) — monetary totals are reported **per
   currency**, never summed across currencies.
-- ❌ **No** separate Tasks/reminders entity and **no** separate Interactions/activity-log entity in
-  v1. Context is captured in a freeform `notes` field on each entity.
+- ❌ **No** separate Tasks/reminders entity and **no** general Interactions/activity-log entity in
+  v1. Day-to-day context is captured in a freeform `notes` field on each entity.
+- ✔️ **Offer is a first-class entity.** A Lead has zero-or-more **Offers** — email-style proposals
+  (`title`, `description`, email `subject`, raw email `body`) linked to the Lead by `LeadID`. Deleting
+  a Lead **cascade-deletes** its Offers. Offers are local-only: composing/sending email is out of
+  scope — an Offer just stores the drafted content.
 - ✔️ **Company is a first-class entity.** Leads, Contacts, and Deals optionally **link to a Company
   by ID** (`CompanyID`, `0` = unlinked); a Company is plain reference data (no funnel state).
   Deleting a Company **unlinks** it from any referencing records — their `CompanyID` is reset to `0`
@@ -53,10 +58,11 @@ writes, so the two stay in sync. See `docs/bbolt-concurrent-access-strategy.md`.
 
 ## Domain Model
 
-Four entities. Every entity has a surrogate `uint64` ID (bbolt `NextSequence`), encoded big-endian
+Five entities. Every entity has a surrogate `uint64` ID (bbolt `NextSequence`), encoded big-endian
 as its primary key so records sort in creation order. Email is **optional** and **non-unique**; it
 is indexed only as a lookup/dedup hint, never as identity. Leads, Contacts, and Deals optionally
-reference a **Company** by `CompanyID` (`0` = unlinked).
+reference a **Company** by `CompanyID` (`0` = unlinked). A **Lead** has zero-or-more **Offers**, each
+linked back to it by `LeadID`.
 
 ### Entities & attributes
 
@@ -119,6 +125,19 @@ with no funnel state.
 | `CreatedAt` | time.Time | RFC3339                                                     |
 | `UpdatedAt` | time.Time | RFC3339                                                     |
 
+**Offer** — an email-style proposal made to a Lead (1:N via `LeadID`). Stores drafted content only;
+sending email is out of scope.
+| field         | type      | notes                                                          |
+|---------------|-----------|----------------------------------------------------------------|
+| `ID`          | uint64    | surrogate, `NextSequence` on `offers` bucket                   |
+| `LeadID`      | uint64    | **required**, must reference an existing Lead                  |
+| `Title`       | string    | **required**                                                   |
+| `Description` | string    | optional, short summary of the offer                          |
+| `Subject`     | string    | optional, email subject line                                  |
+| `Body`        | string    | optional, raw email body content (may be long, multi-line)     |
+| `CreatedAt`   | time.Time | RFC3339                                                        |
+| `UpdatedAt`   | time.Time | RFC3339                                                        |
+
 ### Relationships
 
 ```
@@ -127,6 +146,9 @@ with no funnel state.
    └─── set on convert ──┘                   │
                                              ▼
                           delete Contact ⇒ CASCADE delete its Deals
+
+ Lead ──1:N──▶ Offer   (Offer.LeadID, required)
+   delete Lead ⇒ CASCADE delete its Offers
 
  Company ──0:N──▶ Lead / Contact / Deal   (optional link via CompanyID)
    delete Company ⇒ UNLINK referencing records (CompanyID → 0; records kept)
@@ -139,6 +161,8 @@ with no funnel state.
   the Lead it came from (`SourceLeadID`).
 - A **Deal** belongs to exactly one **Contact**. Deleting a Contact **cascades**: all its Deals are
   deleted in the same transaction.
+- A **Lead** has zero-or-more **Offers** (1:N via `Offer.LeadID`, required). Deleting a Lead
+  **cascades**: all its Offers (and their index entries) are deleted in the same transaction.
 - A **Company** is optionally referenced by zero-or-more Leads, Contacts, and Deals (each via its
   `CompanyID`). The link is **validated** on write (a non-zero `CompanyID` must reference an existing
   Company). Deleting a Company **unlinks** every referencing Lead/Contact/Deal — their `CompanyID` is
@@ -177,8 +201,10 @@ with no funnel state.
 | `contacts`             | 8-byte big-endian `uint64` ID                       | JSON `Contact`| primary store, creation-ordered                   |
 | `deals`                | 8-byte big-endian `uint64` ID                       | JSON `Deal`  | primary store, creation-ordered                    |
 | `companies`            | 8-byte big-endian `uint64` ID                       | JSON `Company`| primary store, creation-ordered                   |
+| `offers`               | 8-byte big-endian `uint64` ID                       | JSON `Offer` | primary store, creation-ordered                    |
 | `idx_contact_by_email` | `lower(email)` + `0x00` + 8-byte BE contactID       | empty / `nil`| email lookup & dedup hint (prefix-scan by email)   |
 | `idx_deal_by_contact`  | 8-byte BE contactID + 8-byte BE dealID              | empty / `nil`| list deals per contact; drives cascade delete      |
+| `idx_offer_by_lead`    | 8-byte BE leadID + 8-byte BE offerID                | empty / `nil`| list offers per lead; drives cascade delete        |
 
 There is **no Company index** — Company name/website/industry search and the reverse "records linked
 to a Company" lookup (used by the unlink-on-delete) are in-memory primary-bucket scans, consistent
@@ -193,6 +219,9 @@ as a plain string is upgraded to a `CompanyID` reference by an idempotent startu
 - `idx_deal_by_contact`: write on deal create; delete+rewrite if a deal's `ContactID` changes;
   delete on deal delete. Cascade delete of a Contact prefix-scans this index by contactID to find
   and remove all its Deals (and their index entries) in one `Update`.
+- `idx_offer_by_lead`: write on offer create; delete+rewrite if an offer's `LeadID` changes; delete
+  on offer delete. Cascade delete of a Lead prefix-scans this index by leadID to find and remove all
+  its Offers (and their index entries) in one `Update`.
 
 ### Lookups served
 - **By ID** (all entities): direct `Get` on the primary bucket.
@@ -200,6 +229,7 @@ as a plain string is upgraded to a `CompanyID` reference by an idempotent startu
   newest-first (IDs are creation-ordered).
 - **Contacts by email:** prefix-scan `idx_contact_by_email` on `lower(email)\x00`.
 - **Deals for a contact:** prefix-scan `idx_deal_by_contact` on the 8-byte contactID prefix.
+- **Offers for a lead:** prefix-scan `idx_offer_by_lead` on the 8-byte leadID prefix.
 - **Leads by status / Deals by stage / Contacts by name-substring or tag:** full primary-bucket scan
   with in-memory filtering. Acceptable because this is a single-user dataset (hundreds–low
   thousands of rows); **no status/stage index in v1.** If volume ever demands it, add
@@ -209,7 +239,8 @@ as a plain string is upgraded to a `CompanyID` reference by an idempotent startu
   `CompanyID`. No company index in v1.
 
 ### Validation enforced at the repository layer
-- `Lead.Name`, `Contact.Name`, `Deal.Title`, `Company.Name` non-empty.
+- `Lead.Name`, `Contact.Name`, `Deal.Title`, `Company.Name`, `Offer.Title` non-empty.
+- `Offer.LeadID` must reference an existing Lead (checked before write).
 - `Lead.Source`, `Lead.Status`, `Deal.Stage` must be one of their enum values.
 - `Lead.Quality`, when set, is an integer `1`–`10` (`0` means unscored).
 - `Deal.ContactID` must reference an existing Contact (checked before write).
@@ -233,7 +264,9 @@ MCP, or both — all are available on both surfaces unless noted).
    contact; set `lead.ContactID` (+`DealID`) and `lead.Status = converted`. All in one `Update`.
    Rejects an already-`converted` lead. Repo: `contacts.Put`, optional `deals.Put`, `leads.Put`,
    index writes. Surfaces: both.
-6. **Delete lead** — remove by ID. Repo: `leads.Delete`. Surfaces: both.
+6. **Delete lead (cascade)** — remove by ID **and all its Offers** and their index entries,
+   atomically. Repo: prefix-scan `idx_offer_by_lead`, delete each offer + its index entry, delete the
+   lead. Returns the deleted offer IDs. Surfaces: both.
 
 ### Contacts
 7. **Create contact (direct)** — insert a `Contact` not originating from a lead
@@ -282,6 +315,17 @@ MCP, or both — all are available on both surfaces unless noted).
 Linking a Lead, Contact, or Deal to a Company is part of its create/update (UC-1,4,7,10,13,16): the
 record carries an optional `CompanyID`, validated to reference an existing Company.
 
+### Offers
+24. **Create offer** — insert an `Offer` for an existing lead (validates `LeadID`; `Title` required).
+    Repo: `offers.Put` + `idx_offer_by_lead`. Surfaces: both.
+25. **List offers** — list all, optional filter by `LeadID`. Repo: `offers` scan, or
+    `idx_offer_by_lead` when filtering by lead. Surfaces: both.
+26. **Get offer** — fetch by ID. Repo: `offers.Get`. Surfaces: both.
+27. **Update offer** — edit fields (title, description, subject, body); maintain `idx_offer_by_lead`
+    if `LeadID` changes (new lead must exist). Repo: `offers.Put` + index. Surfaces: both.
+28. **Delete offer** — remove by ID and its index entry. Repo: `offers.Delete` + `idx_offer_by_lead`.
+    Surfaces: both. (Deleting a Lead cascade-deletes its Offers — see UC-6.)
+
 ## User Stories
 
 ### As the operator using the TUI
@@ -323,7 +367,7 @@ to **stderr** only (stdout is the protocol channel). User/input errors →
 | `get_lead`        | UC-3 fetch a lead                    | id (req)                                                                            | Lead                                    |
 | `update_lead`     | UC-4 edit/advance a lead             | id (req) + any editable fields incl. status, company_id, quality                   | updated Lead                            |
 | `convert_lead`    | UC-5 convert to contact (+deal)      | id (req), make_deal (bool), deal_title?, deal_value?, deal_currency?               | { contact, deal? , lead }               |
-| `delete_lead`     | UC-6 delete a lead                   | id (req)                                                                            | ok                                      |
+| `delete_lead`     | UC-6 delete a lead (cascade offers)  | id (req)                                                                            | { deleted, deleted_offer_ids[] }        |
 | `create_contact`  | UC-7 add a contact                   | name (req), company_id?, email, phone, tags[], notes                               | created Contact                         |
 | `list_contacts`   | UC-8 list/search contacts            | query? (name substring), email?, tag?                                              | { contacts: Contact[] }                 |
 | `get_contact`     | UC-9 fetch a contact                 | id (req)                                                                            | Contact                                 |
@@ -339,6 +383,11 @@ to **stderr** only (stdout is the protocol channel). User/input errors →
 | `get_company`     | UC-21 fetch a company                | id (req)                                                                            | Company                                 |
 | `update_company`  | UC-22 edit a company                 | id (req) + editable fields                                                          | updated Company                         |
 | `delete_company`  | UC-23 delete (unlink references)     | id (req)                                                                            | { deleted, unlinked }                   |
+| `create_offer`    | UC-24 add an offer                   | lead_id (req), title (req), description?, subject?, body?                           | created Offer                           |
+| `list_offers`     | UC-25 list/filter offers             | lead_id?                                                                            | { offers: Offer[] }                     |
+| `get_offer`       | UC-26 fetch an offer                 | id (req)                                                                            | Offer                                   |
+| `update_offer`    | UC-27 edit an offer                  | id (req), lead_id (req) + editable fields (title, description, subject, body)       | updated Offer                           |
+| `delete_offer`    | UC-28 delete an offer                | id (req)                                                                            | ok                                      |
 | `pipeline_summary`| UC-18 funnel + pipeline aggregate    | (none)                                                                              | { deals_by_stage[], leads_by_status[] } |
 
 Tools with more than one or two args use typed input structs (`jsonschema` tags) +
@@ -356,6 +405,7 @@ description. A `jsonschema` tag value is a plain description string (the schema 
 | `crm://contacts/{id}` | a single Contact as JSON                  |
 | `crm://deals/{id}`    | a single Deal as JSON                     |
 | `crm://companies/{id}`| a single Company as JSON                  |
+| `crm://offers/{id}`   | a single Offer as JSON                    |
 | `crm://pipeline`      | the pipeline summary (same as UC-18)      |
 
 `{id}` is validated as a numeric ID; unknown IDs return a not-found resource error.
@@ -389,7 +439,7 @@ mutations come back via `QueueUpdateDraw`.
 ```
 
 - **Sidebar** (left, fixed width; `Ctrl-B` collapses; auto-collapses on narrow terminals): the
-  numbered navigation menu and the app's home — there is no separate home screen. It lists the five
+  numbered navigation menu and the app's home — there is no separate home screen. It lists the six
   sections, each with a numeric shortcut and a record-count badge; the active section is highlighted.
 - **Body** (right): a header line (section title · record count) above a `Pages` container whose
   visible page is the current section. Create/edit forms open **full-screen** here; modals layer over
@@ -404,7 +454,8 @@ mutations come back via `QueueUpdateDraw`.
 1. **Dashboard** — read-only pipeline summary: deal count + value per stage (grouped by currency)
    and lead counts by status (UC-18). The landing section.
 2. **Leads** — master-detail of leads; `n` new, `e`/Enter edit, `c` **convert** (form: make-deal?
-   title/value/currency), `d` delete (UC-1,2,4,5,6).
+   title/value/currency), `o` **new offer** for the selected lead (opens the offer form pre-filled
+   with its Lead ID), `d` delete (UC-1,2,4,5,6,24). The detail pane lists the lead's offers.
 3. **Contacts** — master-detail of contacts; `n` new, `e`/Enter edit, `d` delete (cascade, with a
    confirm modal naming the affected deals). The detail pane lists the contact's deals
    (UC-7,8,10,11,12).
@@ -412,6 +463,11 @@ mutations come back via `QueueUpdateDraw`.
    delete (UC-13,14,16,17).
 5. **Companies** — master-detail of companies; `n` new, `e`/Enter edit, `d` delete (with a confirm
    modal naming how many records will be **unlinked**, not deleted) (UC-19,20,22,23).
+6. **Offers** — master-detail of offers; `n` new, `e`/Enter edit, `l` **go to the offer's lead**
+   (jumps to the Leads section and highlights it), `d` delete. Each offer links to a lead by **Lead
+   ID**; the create/edit form has a multi-line **Body** text area for raw email content, and the
+   detail pane shows the full subject/body plus the resolved lead name (UC-24,25,27,28). The lead↔offer
+   link is navigable from both sides (`o` on a lead, `l` on an offer).
 
 Every list supports `/` incremental **case-insensitive filter** across the visible columns, `Space`
 **multi-select** with batch actions, `r` reload, and renders one of the mandatory
@@ -420,10 +476,11 @@ detail pane shows absolute ones. Missing values render as a dim em-dash.
 
 ### Keys (no F-keys)
 
-Shared vocabulary: `1`–`5` jump to a section; `↑↓` / `j k` move; `Enter` open/confirm; `Esc`
+Shared vocabulary: `1`–`6` jump to a section; `↑↓` / `j k` move; `Enter` open/confirm; `Esc`
 back / cancel / clear-filter; `Ctrl-B` toggle sidebar; `Tab` cycle sidebar↔table↔detail; `/` filter;
-`Space` toggle row select; `n`/`e`/`d`/`r` row actions; `c` convert (Leads), `s` stage (Deals);
-`Ctrl-S` save (forms); `?` help overlay; `q` / `Ctrl-C` quit. Single letters act while a list is
+`Space` toggle row select; `n`/`e`/`d`/`r` row actions; `c` convert (Leads), `o` new offer (Leads),
+`s` stage (Deals), `l` go to lead (Offers); `Ctrl-S` save (forms); `?` help overlay; `q` / `Ctrl-C`
+quit. Single letters act while a list is
 focused; Ctrl-chords act in forms/inputs so typing never fires an action.
 
 ### Forms & confirmation
@@ -459,8 +516,10 @@ selection is guarded. Below 80×24 the UI shows a centered "Terminal too small" 
   lead and whose `SourceLeadID` is the lead; with `make_deal` it also creates a Deal for that contact
   with the given value/currency; the lead becomes `converted` with `ContactID` (and `DealID`) set;
   the whole thing is atomic; converting an already-`converted` lead is rejected.
-- **UC-6 Delete lead:** the lead is gone after delete; deleting an unknown ID is a clean no-op/error,
-  not a panic.
+- **UC-6 Delete lead (cascade):** deleting a lead removes the lead, **every** offer with that
+  `LeadID`, and all related index entries, atomically; afterward no offer references the deleted lead
+  and no `idx_offer_by_lead` entry remains for it; the returned deleted-offer IDs match. Deleting an
+  unknown ID is a clean no-op/error, not a panic.
 - **UC-7 Create contact:** a named contact persists with a fresh ID and, if email is present, an
   `idx_contact_by_email` entry exists.
 - **UC-8 List/search contacts:** email search returns all contacts with that email via the index;
@@ -492,19 +551,27 @@ selection is guarded. Below 80×24 the UI shows a centered "Terminal too small" 
   **every** referencing Lead, Contact, and Deal in the same transaction (those records remain and
   keep their other fields); the returned unlinked count equals the number of records changed; no
   record references the deleted company afterward.
+- **UC-24…27 Offer CRUD:** an offer with a non-empty title and an **existing** `lead_id` persists
+  with a fresh monotonic ID, timestamps, and an `idx_offer_by_lead` entry; empty title is rejected;
+  an offer referencing a non-existent lead is rejected; get returns the record; update persists
+  changes (incl. body), advances `UpdatedAt` (ID and `CreatedAt` unchanged), and rewrites the lead
+  index when `LeadID` changes; list unfiltered returns all, the `lead_id` filter narrows via the
+  index.
+- **UC-28 Delete offer:** the offer and its `idx_offer_by_lead` entry are removed.
 - **Legacy migration:** a Lead/Contact persisted with a plain-string `company` is upgraded on open to
   a `CompanyID` referencing a (find-or-created, deduped-by-name) Company, and the legacy key is
   dropped; re-running open is a no-op.
 - **MCP:** each tool is reachable through an in-process client; input/business errors come back as
   tool-error results (not transport errors); resources return the right record for a valid ID and a
   not-found error otherwise; logs never touch stdout.
-- **TUI:** all five sections render via a `SimulationScreen`; numeric keys (`1`–`5`) switch sections
-  and `q` quits; the `?` help overlay opens and closes; `/` filtering narrows a list and `Esc` clears
+- **TUI:** all six sections render via a `SimulationScreen`; numeric keys (`1`–`6`) switch sections
+  (including the Offers section) and `q` quits; the `?` help overlay opens and closes; `/` filtering narrows a list and `Esc` clears
   it; a create form blocks `Ctrl-S` while a required field is empty and saves once valid; the convert
   action, the stage-picker modal, the cascade-delete confirm modal, and the Companies section (with
   its company picker in the lead/contact/deal forms and the unlink-on-delete confirm) work; the
-  lead/contact "Company" column and detail resolve a `CompanyID` to its name; no DB call runs on the
-  event loop.
+  lead/contact "Company" column and detail resolve a `CompanyID` to its name; the lead↔offer link is
+  navigable both ways (`o` on a lead opens a new-offer form pre-filled with that lead; `l` on an offer
+  jumps to its lead and highlights it); the heavy list loads run off the event loop.
 - **Concurrency:** two `Store`s open on the same file concurrently (standing in for the TUI and MCP
   processes) can both read and write it, and a write through one is visible through the other —
   proving the connection-per-operation contract. `TxID()` is stable across reads and strictly
