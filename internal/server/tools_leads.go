@@ -13,13 +13,14 @@ import (
 // and argument binding.
 
 type createLeadArgs struct {
-	Name    string   `json:"name" jsonschema:"Lead name (required)"`
-	Company string   `json:"company,omitempty" jsonschema:"Company name"`
-	Email   string   `json:"email,omitempty" jsonschema:"Email address (optional)"`
-	Phone   string   `json:"phone,omitempty" jsonschema:"Phone number"`
-	Tags    []string `json:"tags,omitempty" jsonschema:"Freeform tags"`
-	Source  string   `json:"source,omitempty" jsonschema:"Lead source: web, referral, event, cold-outreach, or other"`
-	Notes   string   `json:"notes,omitempty" jsonschema:"Freeform notes"`
+	Name      string   `json:"name" jsonschema:"Lead name (required)"`
+	CompanyID uint64   `json:"company_id,omitempty" jsonschema:"Linked Company id (0 or omitted = none)"`
+	Email     string   `json:"email,omitempty" jsonschema:"Email address (optional)"`
+	Phone     string   `json:"phone,omitempty" jsonschema:"Phone number"`
+	Tags      []string `json:"tags,omitempty" jsonschema:"Freeform tags"`
+	Quality   int      `json:"quality,omitempty" jsonschema:"Lead quality score 1-10 (0 or omitted = unscored)"`
+	Source    string   `json:"source,omitempty" jsonschema:"Lead source: web, referral, event, cold-outreach, or other"`
+	Notes     string   `json:"notes,omitempty" jsonschema:"Freeform notes"`
 }
 
 type listLeadsArgs struct {
@@ -31,15 +32,16 @@ type idArg struct {
 }
 
 type updateLeadArgs struct {
-	ID      uint64   `json:"id" jsonschema:"Lead id"`
-	Name    string   `json:"name" jsonschema:"Lead name (required)"`
-	Company string   `json:"company,omitempty" jsonschema:"Company name"`
-	Email   string   `json:"email,omitempty" jsonschema:"Email address"`
-	Phone   string   `json:"phone,omitempty" jsonschema:"Phone number"`
-	Tags    []string `json:"tags,omitempty" jsonschema:"Freeform tags"`
-	Source  string   `json:"source,omitempty" jsonschema:"Lead source enum"`
-	Status  string   `json:"status,omitempty" jsonschema:"Lead status enum"`
-	Notes   string   `json:"notes,omitempty" jsonschema:"Freeform notes"`
+	ID        uint64   `json:"id" jsonschema:"Lead id"`
+	Name      string   `json:"name" jsonschema:"Lead name (required)"`
+	CompanyID uint64   `json:"company_id,omitempty" jsonschema:"Linked Company id (0 = unlink)"`
+	Email     string   `json:"email,omitempty" jsonschema:"Email address"`
+	Phone     string   `json:"phone,omitempty" jsonschema:"Phone number"`
+	Tags      []string `json:"tags,omitempty" jsonschema:"Freeform tags"`
+	Quality   int      `json:"quality,omitempty" jsonschema:"Lead quality score 1-10 (0 = unscored)"`
+	Source    string   `json:"source,omitempty" jsonschema:"Lead source enum"`
+	Status    string   `json:"status,omitempty" jsonschema:"Lead status enum"`
+	Notes     string   `json:"notes,omitempty" jsonschema:"Freeform notes"`
 }
 
 type convertLeadArgs struct {
@@ -90,8 +92,8 @@ func (h *handlers) registerLeadTools(s *server.MCPServer) {
 
 func (h *handlers) createLead(_ context.Context, _ mcp.CallToolRequest, a createLeadArgs) (*mcp.CallToolResult, error) {
 	lead, err := h.store.CreateLead(models.Lead{
-		Name: a.Name, Company: a.Company, Email: a.Email, Phone: a.Phone,
-		Tags: a.Tags, Source: models.Source(a.Source), Notes: a.Notes,
+		Name: a.Name, CompanyID: a.CompanyID, Email: a.Email, Phone: a.Phone,
+		Tags: a.Tags, Quality: a.Quality, Source: models.Source(a.Source), Notes: a.Notes,
 	})
 	if err != nil {
 		return toolErr(err)
@@ -117,8 +119,8 @@ func (h *handlers) getLead(_ context.Context, _ mcp.CallToolRequest, a idArg) (*
 
 func (h *handlers) updateLead(_ context.Context, _ mcp.CallToolRequest, a updateLeadArgs) (*mcp.CallToolResult, error) {
 	lead, err := h.store.UpdateLead(models.Lead{
-		ID: a.ID, Name: a.Name, Company: a.Company, Email: a.Email, Phone: a.Phone,
-		Tags: a.Tags, Source: models.Source(a.Source), Status: models.LeadStatus(a.Status), Notes: a.Notes,
+		ID: a.ID, Name: a.Name, CompanyID: a.CompanyID, Email: a.Email, Phone: a.Phone,
+		Tags: a.Tags, Quality: a.Quality, Source: models.Source(a.Source), Status: models.LeadStatus(a.Status), Notes: a.Notes,
 	})
 	if err != nil {
 		return toolErr(err)

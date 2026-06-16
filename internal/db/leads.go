@@ -10,10 +10,12 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
-// errInvalidSource / errInvalidStatus are lead validation failures.
+// errInvalidSource / errInvalidStatus / errInvalidQuality are lead validation
+// failures.
 var (
-	errInvalidSource = errors.New("invalid lead source")
-	errInvalidStatus = errors.New("invalid lead status")
+	errInvalidSource  = errors.New("invalid lead source")
+	errInvalidStatus  = errors.New("invalid lead status")
+	errInvalidQuality = errors.New("quality must be between 1 and 10 (0 = unscored)")
 )
 
 // CreateLead inserts a new lead (UC-1). Name is required; Status defaults to
@@ -34,6 +36,9 @@ func (s *Store) CreateLead(l models.Lead) (models.Lead, error) {
 	l.UpdatedAt = now
 
 	err := s.update(func(tx *bolt.Tx) error {
+		if err := checkCompanyRef(tx, l.CompanyID); err != nil {
+			return err
+		}
 		b := tx.Bucket(bucketLeads)
 		id, err := b.NextSequence()
 		if err != nil {
@@ -108,6 +113,9 @@ func (s *Store) UpdateLead(l models.Lead) (models.Lead, error) {
 		return models.Lead{}, fmt.Errorf("update lead: %w", err)
 	}
 	err := s.update(func(tx *bolt.Tx) error {
+		if err := checkCompanyRef(tx, l.CompanyID); err != nil {
+			return err
+		}
 		b := tx.Bucket(bucketLeads)
 		raw := b.Get(itob(l.ID))
 		if raw == nil {
@@ -147,13 +155,17 @@ func (s *Store) DeleteLead(id uint64) error {
 	return nil
 }
 
-// validateLeadEnums checks Source (if set) and Status against their enums.
+// validateLeadEnums checks Source (if set) and Status against their enums, and
+// the optional Quality score against its 1–10 range (0 = unscored).
 func validateLeadEnums(l models.Lead) error {
 	if l.Source != "" && !l.Source.Valid() {
 		return errInvalidSource
 	}
 	if !l.Status.Valid() {
 		return errInvalidStatus
+	}
+	if l.Quality < 0 || l.Quality > 10 {
+		return errInvalidQuality
 	}
 	return nil
 }

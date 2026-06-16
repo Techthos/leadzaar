@@ -21,6 +21,7 @@ var (
 	bucketLeads          = []byte("leads")
 	bucketContacts       = []byte("contacts")
 	bucketDeals          = []byte("deals")
+	bucketCompanies      = []byte("companies")
 	bucketContactByEmail = []byte("idx_contact_by_email")
 	bucketDealByContact  = []byte("idx_deal_by_contact")
 )
@@ -30,6 +31,7 @@ var allBuckets = [][]byte{
 	bucketLeads,
 	bucketContacts,
 	bucketDeals,
+	bucketCompanies,
 	bucketContactByEmail,
 	bucketDealByContact,
 }
@@ -94,7 +96,7 @@ func Open(path string, opts ...Option) (*Store, error) {
 		return nil, err
 	}
 	defer func() { _ = bdb.Close() }()
-	if err := migrate(bdb); err != nil {
+	if err := s.migrate(bdb); err != nil {
 		return nil, err
 	}
 	return s, nil
@@ -162,15 +164,16 @@ func (s *Store) TxID() (int, error) {
 	return id, err
 }
 
-// migrate creates every required top-level bucket idempotently in one txn.
-func migrate(bdb *bolt.DB) error {
+// migrate creates every required top-level bucket idempotently and then runs the
+// idempotent data migrations, all in one txn.
+func (s *Store) migrate(bdb *bolt.DB) error {
 	return bdb.Update(func(tx *bolt.Tx) error {
 		for _, name := range allBuckets {
 			if _, err := tx.CreateBucketIfNotExists(name); err != nil {
 				return fmt.Errorf("create bucket %q: %w", name, err)
 			}
 		}
-		return nil
+		return s.migrateLegacyCompany(tx)
 	})
 }
 

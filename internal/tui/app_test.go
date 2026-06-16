@@ -10,7 +10,8 @@ import (
 	"github.com/techthos/microapp-crm/internal/models"
 )
 
-// seededStore returns a store with one lead, one contact, and one deal.
+// seededStore returns a store with one company, one lead, one contact (linked to
+// the company), and one deal.
 func seededStore(t *testing.T) *db.Store {
 	t.Helper()
 	store, err := db.Open(filepath.Join(t.TempDir(), "crm.db"))
@@ -18,10 +19,14 @@ func seededStore(t *testing.T) *db.Store {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
+	globex, err := store.CreateCompany(models.Company{Name: "Globex"})
+	if err != nil {
+		t.Fatalf("seed company: %v", err)
+	}
 	if _, err := store.CreateLead(models.Lead{Name: "Zara", Source: models.SourceWeb}); err != nil {
 		t.Fatalf("seed lead: %v", err)
 	}
-	c, err := store.CreateContact(models.Contact{Name: "Quentin"})
+	c, err := store.CreateContact(models.Contact{Name: "Quentin", CompanyID: globex.ID})
 	if err != nil {
 		t.Fatalf("seed contact: %v", err)
 	}
@@ -98,9 +103,13 @@ func TestTUINavigationAndRender(t *testing.T) {
 
 	sim.InjectKey(tcell.KeyRune, '3', tcell.ModNone)
 	waitFor(t, ti, sim, "Quentin")
+	waitFor(t, ti, sim, "Globex") // contact's CompanyID resolves to the company name
 
 	sim.InjectKey(tcell.KeyRune, '4', tcell.ModNone)
 	waitFor(t, ti, sim, "Megadeal")
+
+	sim.InjectKey(tcell.KeyRune, '5', tcell.ModNone)
+	waitFor(t, ti, sim, "Globex") // Companies section lists the company
 }
 
 func TestTUIQuit(t *testing.T) {

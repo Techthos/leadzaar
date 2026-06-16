@@ -22,6 +22,7 @@ const (
 	pageLeads     = "leads"
 	pageContacts  = "contacts"
 	pageDeals     = "deals"
+	pageCompanies = "companies"
 	pageForm      = "form"    // full-screen create/edit form
 	pageOverlay   = "overlay" // centered modal / help over the body
 )
@@ -79,10 +80,15 @@ type tui struct {
 	msgZone  *tview.TextView
 	hintZone *tview.TextView
 
-	dash     *dashboardScreen
-	leads    *listScreen[models.Lead]
-	contacts *listScreen[models.Contact]
-	deals    *listScreen[models.Deal]
+	dash      *dashboardScreen
+	leads     *listScreen[models.Lead]
+	contacts  *listScreen[models.Contact]
+	deals     *listScreen[models.Deal]
+	companies *listScreen[models.Company]
+
+	// companyNames maps CompanyID→name for resolving links in lists/details,
+	// refreshed on every applyData. Read by the render closures via companyName.
+	companyNames map[uint64]string
 
 	sections []sectionEntry
 	active   int
@@ -149,16 +155,19 @@ func newTUI(store *db.Store) *tui {
 	t.sidebar.SetHighlightFullLine(true).SetBorder(true).SetTitle(" microapp-crm ")
 	t.sidebar.SetSelectedFunc(func(i int, _, _ string, _ rune) { t.switchTo(i) })
 
+	t.companyNames = map[uint64]string{}
 	t.dash = newDashboard(t)
 	t.leads = newLeadsScreen(t)
 	t.contacts = newContactsScreen(t)
 	t.deals = newDealsScreen(t)
+	t.companies = newCompaniesScreen(t)
 
 	t.sections = []sectionEntry{
 		{pageDashboard, "Dashboard", t.dash},
 		{pageLeads, "Leads", t.leads},
 		{pageContacts, "Contacts", t.contacts},
 		{pageDeals, "Deals", t.deals},
+		{pageCompanies, "Companies", t.companies},
 	}
 	for i, e := range t.sections {
 		t.body.AddPage(e.page, e.sec.primitive(), true, i == 0)
@@ -388,14 +397,16 @@ func (t *tui) setMessage(s string) {
 
 // dataSnapshot is a full read of every screen's data, gathered off the event loop.
 type dataSnapshot struct {
-	leads       []models.Lead
-	leadsErr    error
-	contacts    []models.Contact
-	contactsErr error
-	deals       []models.Deal
-	dealsErr    error
-	summary     models.PipelineSummary
-	summaryErr  error
+	leads        []models.Lead
+	leadsErr     error
+	contacts     []models.Contact
+	contactsErr  error
+	deals        []models.Deal
+	dealsErr     error
+	companies    []models.Company
+	companiesErr error
+	summary      models.PipelineSummary
+	summaryErr   error
 }
 
 // fetchAll reads everything from the store. Safe to call off the event loop.
@@ -404,15 +415,25 @@ func (t *tui) fetchAll() dataSnapshot {
 	s.leads, s.leadsErr = t.store.ListLeads("")
 	s.contacts, s.contactsErr = t.store.SearchContacts("")
 	s.deals, s.dealsErr = t.store.ListDeals(db.DealFilter{})
+	s.companies, s.companiesErr = t.store.ListCompanies()
 	s.summary, s.summaryErr = t.store.PipelineSummary()
 	return s
 }
 
-// applyData pushes a dataSnapshot into the screens. Runs on the event loop.
+// applyData pushes a dataSnapshot into the screens. Runs on the event loop. The
+// company-name resolver map is rebuilt first so the lead/contact/deal renderers
+// resolve their links against the freshest company set.
 func (t *tui) applyData(s dataSnapshot) {
+	names := make(map[uint64]string, len(s.companies))
+	for _, c := range s.companies {
+		names[c.ID] = c.Name
+	}
+	t.companyNames = names
+
 	t.leads.setItems(s.leads, s.leadsErr)
 	t.contacts.setItems(s.contacts, s.contactsErr)
 	t.deals.setItems(s.deals, s.dealsErr)
+	t.companies.setItems(s.companies, s.companiesErr)
 	t.dash.set(s.summary, s.summaryErr)
 	t.refreshChrome()
 }

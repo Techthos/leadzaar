@@ -96,6 +96,73 @@ func TestEveryToolHappyPath(t *testing.T) {
 	}
 }
 
+// TestCompanyToolsAndUnlink exercises the company CRUD tools, links a lead/contact
+// to a company, then deletes the company through the tool and verifies the
+// unlink count and the cleared reference + the company resource read path.
+func TestCompanyToolsAndUnlink(t *testing.T) {
+	t.Parallel()
+	c, ctx := setup(t)
+
+	comp := callTool(t, c, ctx, "create_company", map[string]any{
+		"name": "Acme", "website": "acme.io", "industry": "Tech",
+	})
+	var company models.Company
+	mustJSON(t, comp, &company)
+	if company.ID == 0 || company.Name != "Acme" {
+		t.Fatalf("create_company result: %+v", company)
+	}
+
+	if r := callTool(t, c, ctx, "list_companies", map[string]any{"query": "acme"}); r.IsError {
+		t.Fatalf("list_companies: %s", resultText(t, r))
+	}
+	if r := callTool(t, c, ctx, "get_company", map[string]any{"id": company.ID}); r.IsError {
+		t.Fatalf("get_company: %s", resultText(t, r))
+	}
+	if r := callTool(t, c, ctx, "update_company", map[string]any{"id": company.ID, "name": "Acme Corp"}); r.IsError {
+		t.Fatalf("update_company: %s", resultText(t, r))
+	}
+
+	// Link a lead and a contact to the company.
+	lres := callTool(t, c, ctx, "create_lead", map[string]any{"name": "L", "company_id": company.ID})
+	var lead models.Lead
+	mustJSON(t, lres, &lead)
+	if lead.CompanyID != company.ID {
+		t.Errorf("lead CompanyID = %d, want %d", lead.CompanyID, company.ID)
+	}
+	cres := callTool(t, c, ctx, "create_contact", map[string]any{"name": "C", "company_id": company.ID})
+	var contact models.Contact
+	mustJSON(t, cres, &contact)
+
+	// Linking to a non-existent company is a tool error.
+	if r := callTool(t, c, ctx, "create_lead", map[string]any{"name": "Bad", "company_id": 99999}); !r.IsError {
+		t.Errorf("create_lead with bad company_id: expected tool error, got %s", resultText(t, r))
+	}
+
+	// Read the company resource.
+	rreq := mcp.ReadResourceRequest{}
+	rreq.Params.URI = "crm://companies/" + itoa(company.ID)
+	if _, err := c.ReadResource(ctx, rreq); err != nil {
+		t.Fatalf("ReadResource(company): %v", err)
+	}
+
+	// Delete the company → unlink count of 2 (lead + contact).
+	del := callTool(t, c, ctx, "delete_company", map[string]any{"id": company.ID})
+	var payload struct {
+		Unlinked int `json:"unlinked"`
+	}
+	mustJSON(t, del, &payload)
+	if payload.Unlinked != 2 {
+		t.Errorf("unlinked = %d, want 2", payload.Unlinked)
+	}
+
+	got := callTool(t, c, ctx, "get_lead", map[string]any{"id": lead.ID})
+	var gotLead models.Lead
+	mustJSON(t, got, &gotLead)
+	if gotLead.CompanyID != 0 {
+		t.Errorf("lead still linked after company delete: CompanyID = %d", gotLead.CompanyID)
+	}
+}
+
 // mustJSON asserts a successful tool result and unmarshals its JSON text into v.
 func mustJSON(t *testing.T, res *mcp.CallToolResult, v any) {
 	t.Helper()

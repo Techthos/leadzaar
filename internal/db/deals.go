@@ -42,6 +42,9 @@ func (s *Store) CreateDeal(d models.Deal) (models.Deal, error) {
 		if tx.Bucket(bucketContacts).Get(itob(d.ContactID)) == nil {
 			return fmt.Errorf("contact %d: %w", d.ContactID, errMissingContact)
 		}
+		if err := checkCompanyRef(tx, d.CompanyID); err != nil {
+			return err
+		}
 		b := tx.Bucket(bucketDeals)
 		id, err := b.NextSequence()
 		if err != nil {
@@ -135,6 +138,9 @@ func (s *Store) UpdateDeal(d models.Deal) (models.Deal, error) {
 		return models.Deal{}, fmt.Errorf("update deal: %w", err)
 	}
 	err := s.update(func(tx *bolt.Tx) error {
+		if err := checkCompanyRef(tx, d.CompanyID); err != nil {
+			return err
+		}
 		b := tx.Bucket(bucketDeals)
 		existingRaw := b.Get(itob(d.ID))
 		if existingRaw == nil {

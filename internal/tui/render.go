@@ -29,6 +29,7 @@ var (
 		{"Company", false},
 		{"Email", false},
 		{"Status", false},
+		{"Qual", true},
 		{"Source", false},
 		{"Updated", false},
 	}
@@ -49,19 +50,37 @@ var (
 		{"Stage", false},
 		{"Updated", false},
 	}
+	companyCols = []col{
+		{"ID", true},
+		{"Name", false},
+		{"Industry", false},
+		{"Website", false},
+		{"Phone", false},
+		{"Updated", false},
+	}
 )
 
+// companyName resolves a CompanyID to its name (via the tui's snapshot map),
+// returning "" when unlinked or unknown — callers dash() it for display.
+func (t *tui) companyName(id uint64) string {
+	if id == 0 {
+		return ""
+	}
+	return t.companyNames[id]
+}
+
 // leadCells renders one lead as a table row (column order matches leadCols).
-func leadCells(l models.Lead) []string {
+// companyName resolves the lead's linked Company to a display name.
+func leadCells(l models.Lead, companyName func(uint64) string) []string {
 	return []string{
-		strconv.FormatUint(l.ID, 10), dash(l.Name), dash(l.Company),
-		dash(l.Email), string(l.Status), dashSource(l.Source), relTime(l.UpdatedAt),
+		strconv.FormatUint(l.ID, 10), dash(l.Name), dash(companyName(l.CompanyID)),
+		dash(l.Email), string(l.Status), qualityText(l.Quality), dashSource(l.Source), relTime(l.UpdatedAt),
 	}
 }
 
-func contactCells(c models.Contact) []string {
+func contactCells(c models.Contact, companyName func(uint64) string) []string {
 	return []string{
-		strconv.FormatUint(c.ID, 10), dash(c.Name), dash(c.Company),
+		strconv.FormatUint(c.ID, 10), dash(c.Name), dash(companyName(c.CompanyID)),
 		dash(c.Email), dash(c.Phone), relTime(c.UpdatedAt),
 	}
 }
@@ -73,14 +92,23 @@ func dealCells(d models.Deal) []string {
 	}
 }
 
+func companyCells(c models.Company) []string {
+	return []string{
+		strconv.FormatUint(c.ID, 10), dash(c.Name), dash(c.Industry),
+		dash(c.Website), dash(c.Phone), relTime(c.UpdatedAt),
+	}
+}
+
 // leadDetail renders the full lead record for the detail pane (absolute
 // timestamps, dim em-dash for missing values, field order matching the form).
-func leadDetail(l models.Lead) string {
+func leadDetail(l models.Lead, companyName func(uint64) string) string {
 	var b strings.Builder
 	field(&b, "Name", l.Name)
-	field(&b, "Company", l.Company)
+	field(&b, "Company", companyName(l.CompanyID))
 	field(&b, "Email", l.Email)
 	field(&b, "Phone", l.Phone)
+	field(&b, "Tags", strings.Join(l.Tags, ", "))
+	field(&b, "Quality", qualityField(l.Quality))
 	field(&b, "Source", string(l.Source))
 	field(&b, "Status", string(l.Status))
 	field(&b, "Notes", l.Notes)
@@ -95,12 +123,13 @@ func leadDetail(l models.Lead) string {
 }
 
 // contactDetail renders a contact plus its deals (UC-12).
-func contactDetail(c models.Contact, deals []models.Deal) string {
+func contactDetail(c models.Contact, deals []models.Deal, companyName func(uint64) string) string {
 	var b strings.Builder
 	field(&b, "Name", c.Name)
-	field(&b, "Company", c.Company)
+	field(&b, "Company", companyName(c.CompanyID))
 	field(&b, "Email", c.Email)
 	field(&b, "Phone", c.Phone)
+	field(&b, "Tags", strings.Join(c.Tags, ", "))
 	field(&b, "Notes", c.Notes)
 	b.WriteString("\n[::b]Deals[::-]\n")
 	if len(deals) == 0 {
@@ -116,10 +145,11 @@ func contactDetail(c models.Contact, deals []models.Deal) string {
 	return b.String()
 }
 
-func dealDetail(d models.Deal) string {
+func dealDetail(d models.Deal, companyName func(uint64) string) string {
 	var b strings.Builder
 	field(&b, "Title", d.Title)
 	field(&b, "Contact ID", uintField(d.ContactID))
+	field(&b, "Company", companyName(d.CompanyID))
 	field(&b, "Value", formatMoney(d.Value))
 	field(&b, "Currency", d.Currency)
 	field(&b, "Stage", string(d.Stage))
@@ -128,6 +158,32 @@ func dealDetail(d models.Deal) string {
 	field(&b, "Created", absTime(d.CreatedAt))
 	field(&b, "Updated", absTime(d.UpdatedAt))
 	return b.String()
+}
+
+// companyDetail renders a company record for the detail pane (field order
+// matches the company form).
+func companyDetail(c models.Company) string {
+	var b strings.Builder
+	field(&b, "Name", c.Name)
+	field(&b, "Website", c.Website)
+	field(&b, "Industry", c.Industry)
+	field(&b, "Phone", c.Phone)
+	field(&b, "Notes", c.Notes)
+	b.WriteString("\n")
+	field(&b, "Created", absTime(c.CreatedAt))
+	field(&b, "Updated", absTime(c.UpdatedAt))
+	return b.String()
+}
+
+// splitTags parses a comma-separated tag input into a trimmed, non-empty slice.
+func splitTags(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if t := strings.TrimSpace(part); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // field writes a "Label: value" detail line, dimming missing values to em-dash.
@@ -150,6 +206,24 @@ func uintField(id uint64) string {
 		return ""
 	}
 	return strconv.FormatUint(id, 10)
+}
+
+// qualityText renders a lead's 1–10 quality score for a list cell, dimming an
+// unscored (0) lead to an em-dash.
+func qualityText(q int) string {
+	if q == 0 {
+		return "[gray]—[-]"
+	}
+	return strconv.Itoa(q)
+}
+
+// qualityField renders a quality score for the detail pane: "" when unscored so
+// the shared field() helper dims it to an em-dash like every other empty value.
+func qualityField(q int) string {
+	if q == 0 {
+		return ""
+	}
+	return strconv.Itoa(q)
 }
 
 // formatMoney renders a monetary value with two decimals.

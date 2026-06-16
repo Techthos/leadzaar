@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"strings"
+
 	"github.com/gdamore/tcell/v2"
 	"github.com/techthos/microapp-crm/internal/db"
 	"github.com/techthos/microapp-crm/internal/models"
@@ -12,8 +14,8 @@ func newLeadsScreen(t *tui) *listScreen[models.Lead] {
 	return newListScreen[models.Lead](t, screenConfig[models.Lead]{
 		page:      pageLeads,
 		cols:      leadCols,
-		cells:     leadCells,
-		detail:    leadDetail,
+		cells:     func(l models.Lead) []string { return leadCells(l, t.companyName) },
+		detail:    func(l models.Lead) string { return leadDetail(l, t.companyName) },
 		id:        func(l models.Lead) uint64 { return l.ID },
 		emptyHint: "No leads yet — press n to add one",
 		hints:     "n new · e edit · c convert · d delete · / filter · r reload",
@@ -59,18 +61,22 @@ func (t *tui) showLeadForm(existing *models.Lead) {
 
 	f := newForm(t, title, t.closeForm)
 	f.input("Name", l.Name, required("Name"))
-	f.input("Company", l.Company, nil)
+	f.companyPicker("Company", t.companies.items, l.CompanyID)
 	f.input("Email", l.Email, nil)
 	f.input("Phone", l.Phone, nil)
+	f.input("Tags", strings.Join(l.Tags, ", "), nil)
+	f.numInput("Quality", qualityField(l.Quality), acceptInt, qualityValidator)
 	f.dropdown("Source", sources, indexOf(sources, string(l.Source)))
 	f.dropdown("Status", statuses, indexOf(statuses, string(l.Status)))
 	f.input("Notes", l.Notes, nil)
 	f.onSave(func(v map[string]string) {
 		base := l
 		base.Name = v["Name"]
-		base.Company = v["Company"]
+		base.CompanyID = parseUint(v["Company"])
 		base.Email = v["Email"]
 		base.Phone = v["Phone"]
+		base.Tags = splitTags(v["Tags"])
+		base.Quality = int(parseUint(v["Quality"]))
 		base.Source = models.Source(v["Source"])
 		base.Status = models.LeadStatus(v["Status"])
 		base.Notes = v["Notes"]

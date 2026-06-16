@@ -22,6 +22,9 @@ func (s *Store) CreateContact(c models.Contact) (models.Contact, error) {
 	c.UpdatedAt = now
 
 	err := s.update(func(tx *bolt.Tx) error {
+		if err := checkCompanyRef(tx, c.CompanyID); err != nil {
+			return err
+		}
 		b := tx.Bucket(bucketContacts)
 		id, err := b.NextSequence()
 		if err != nil {
@@ -120,12 +123,13 @@ func (s *Store) SearchContacts(query string) ([]models.Contact, error) {
 	}
 	var out []models.Contact
 	err := s.view(func(tx *bolt.Tx) error {
+		names := companyNames(tx)
 		return tx.Bucket(bucketContacts).ForEach(func(_, v []byte) error {
 			var c models.Contact
 			if err := json.Unmarshal(v, &c); err != nil {
 				return err
 			}
-			if contactMatches(c, q) {
+			if contactMatches(c, names[c.CompanyID], q) {
 				out = append(out, c)
 			}
 			return nil
@@ -138,9 +142,11 @@ func (s *Store) SearchContacts(query string) ([]models.Contact, error) {
 }
 
 // contactMatches reports whether contact c matches the already-lowercased query.
-func contactMatches(c models.Contact, q string) bool {
+// companyName is the contact's linked company name ("" when unlinked), resolved
+// by the caller so the company is searchable even though it is now a reference.
+func contactMatches(c models.Contact, companyName, q string) bool {
 	if strings.Contains(strings.ToLower(c.Name), q) ||
-		strings.Contains(strings.ToLower(c.Company), q) ||
+		strings.Contains(strings.ToLower(companyName), q) ||
 		strings.Contains(strings.ToLower(c.Email), q) {
 		return true
 	}
@@ -150,6 +156,21 @@ func contactMatches(c models.Contact, q string) bool {
 		}
 	}
 	return false
+}
+
+// companyNames builds an id→name map of all companies within tx, for resolving
+// a record's CompanyID to a display/search name.
+func companyNames(tx *bolt.Tx) map[uint64]string {
+	names := make(map[uint64]string)
+	_ = tx.Bucket(bucketCompanies).ForEach(func(_, v []byte) error {
+		var c models.Company
+		if err := json.Unmarshal(v, &c); err != nil {
+			return err
+		}
+		names[c.ID] = c.Name
+		return nil
+	})
+	return names
 }
 
 // DeleteContact deletes a contact and cascades to all of its deals (UC-11),
@@ -211,6 +232,9 @@ func (s *Store) UpdateContact(c models.Contact) (models.Contact, error) {
 		return models.Contact{}, fmt.Errorf("update contact: %w", errEmptyName)
 	}
 	err := s.update(func(tx *bolt.Tx) error {
+		if err := checkCompanyRef(tx, c.CompanyID); err != nil {
+			return err
+		}
 		b := tx.Bucket(bucketContacts)
 		existingRaw := b.Get(itob(c.ID))
 		if existingRaw == nil {

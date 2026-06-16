@@ -42,16 +42,21 @@ writes, so the two stay in sync. See `docs/bbolt-concurrent-access-strategy.md`.
   currency**, never summed across currencies.
 - ❌ **No** separate Tasks/reminders entity and **no** separate Interactions/activity-log entity in
   v1. Context is captured in a freeform `notes` field on each entity.
-- ❌ **No** separate Organization entity in v1 — company is a plain string field on Lead/Contact.
+- ✔️ **Company is a first-class entity.** Leads, Contacts, and Deals optionally **link to a Company
+  by ID** (`CompanyID`, `0` = unlinked); a Company is plain reference data (no funnel state).
+  Deleting a Company **unlinks** it from any referencing records — their `CompanyID` is reset to `0`
+  and the records are kept (no cascade delete of people/deals). Companies are still **local-only**:
+  no enrichment, no network lookups.
 - ❌ **No** networked or cross-machine concurrency — concurrent access is limited to **local
   processes on one machine** sharing the file (serialized at the file level, brief per-operation
   locks). High write contention is out of scope; this is a single-user tool.
 
 ## Domain Model
 
-Three entities. Every entity has a surrogate `uint64` ID (bbolt `NextSequence`), encoded big-endian
+Four entities. Every entity has a surrogate `uint64` ID (bbolt `NextSequence`), encoded big-endian
 as its primary key so records sort in creation order. Email is **optional** and **non-unique**; it
-is indexed only as a lookup/dedup hint, never as identity.
+is indexed only as a lookup/dedup hint, never as identity. Leads, Contacts, and Deals optionally
+reference a **Company** by `CompanyID` (`0` = unlinked).
 
 ### Entities & attributes
 
@@ -60,10 +65,11 @@ is indexed only as a lookup/dedup hint, never as identity.
 |-------------|-------------|------------------------------------------------------------------|
 | `ID`        | uint64      | surrogate, `NextSequence` on `leads` bucket                      |
 | `Name`      | string      | **required**                                                     |
-| `Company`   | string      | optional, plain string                                           |
+| `CompanyID` | uint64      | optional link to a Company (`0` = none); must reference one      |
 | `Email`     | string      | optional, indexed                                                |
 | `Phone`     | string      | optional                                                         |
 | `Tags`      | []string    | optional, ad-hoc grouping                                        |
+| `Quality`   | int         | optional lead score `1`–`10` (`0` = unscored)                   |
 | `Source`    | string enum | `web` \| `referral` \| `event` \| `cold-outreach` \| `other`    |
 | `Status`    | string enum | `new` \| `contacted` \| `qualified` \| `converted` \| `lost`    |
 | `Notes`     | string      | freeform, multi-line                                             |
@@ -77,7 +83,7 @@ is indexed only as a lookup/dedup hint, never as identity.
 |----------------|-----------|-------------------------------------------------------------|
 | `ID`           | uint64    | surrogate, `NextSequence` on `contacts` bucket              |
 | `Name`         | string    | **required**                                                |
-| `Company`      | string    | optional, plain string                                      |
+| `CompanyID`    | uint64    | optional link to a Company (`0` = none); must reference one  |
 | `Email`        | string    | optional, indexed                                           |
 | `Phone`        | string    | optional                                                    |
 | `Tags`         | []string  | optional                                                    |
@@ -92,12 +98,26 @@ is indexed only as a lookup/dedup hint, never as identity.
 | `ID`        | uint64      | surrogate, `NextSequence` on `deals` bucket                          |
 | `Title`     | string      | **required**                                                         |
 | `ContactID` | uint64      | **required**, must reference an existing Contact                     |
+| `CompanyID` | uint64      | optional link to a Company (`0` = none); must reference one          |
 | `Value`     | float64     | monetary amount                                                      |
 | `Currency`  | string      | 3-letter code (e.g. `EUR`, `USD`); accompanies `Value`              |
 | `Stage`     | string enum | `qualification` \| `proposal` \| `negotiation` \| `won` \| `lost`   |
 | `Notes`     | string      | freeform, multi-line                                                 |
 | `CreatedAt` | time.Time   | RFC3339                                                              |
 | `UpdatedAt` | time.Time   | RFC3339                                                              |
+
+**Company** — an organization that Leads, Contacts, and Deals may optionally link to. Reference data
+with no funnel state.
+| field       | type      | notes                                                       |
+|-------------|-----------|-------------------------------------------------------------|
+| `ID`        | uint64    | surrogate, `NextSequence` on `companies` bucket             |
+| `Name`      | string    | **required**                                                |
+| `Website`   | string    | optional                                                    |
+| `Industry`  | string    | optional, freeform                                          |
+| `Phone`     | string    | optional                                                    |
+| `Notes`     | string    | freeform, multi-line                                        |
+| `CreatedAt` | time.Time | RFC3339                                                     |
+| `UpdatedAt` | time.Time | RFC3339                                                     |
 
 ### Relationships
 
@@ -107,15 +127,22 @@ is indexed only as a lookup/dedup hint, never as identity.
    └─── set on convert ──┘                   │
                                              ▼
                           delete Contact ⇒ CASCADE delete its Deals
+
+ Company ──0:N──▶ Lead / Contact / Deal   (optional link via CompanyID)
+   delete Company ⇒ UNLINK referencing records (CompanyID → 0; records kept)
 ```
 
 - A **Lead** converts into exactly one **Contact** (always) and optionally one **Deal**; after
   conversion the Lead is retained with `Status = converted` and back-references (`ContactID`,
-  `DealID`) for provenance.
+  `DealID`) for provenance. The Contact inherits the Lead's `CompanyID`.
 - A **Contact** has zero-or-more **Deals** (1:N via `Deal.ContactID`). A Contact optionally records
   the Lead it came from (`SourceLeadID`).
 - A **Deal** belongs to exactly one **Contact**. Deleting a Contact **cascades**: all its Deals are
   deleted in the same transaction.
+- A **Company** is optionally referenced by zero-or-more Leads, Contacts, and Deals (each via its
+  `CompanyID`). The link is **validated** on write (a non-zero `CompanyID` must reference an existing
+  Company). Deleting a Company **unlinks** every referencing Lead/Contact/Deal — their `CompanyID` is
+  reset to `0` in the same transaction; the records themselves are retained (no cascade delete).
 
 ### Identity / key strategy
 - Canonical identity for all three entities is the surrogate `uint64` ID (creation-ordered).
@@ -149,8 +176,15 @@ is indexed only as a lookup/dedup hint, never as identity.
 | `leads`                | 8-byte big-endian `uint64` ID                       | JSON `Lead`  | primary store, creation-ordered                    |
 | `contacts`             | 8-byte big-endian `uint64` ID                       | JSON `Contact`| primary store, creation-ordered                   |
 | `deals`                | 8-byte big-endian `uint64` ID                       | JSON `Deal`  | primary store, creation-ordered                    |
+| `companies`            | 8-byte big-endian `uint64` ID                       | JSON `Company`| primary store, creation-ordered                   |
 | `idx_contact_by_email` | `lower(email)` + `0x00` + 8-byte BE contactID       | empty / `nil`| email lookup & dedup hint (prefix-scan by email)   |
 | `idx_deal_by_contact`  | 8-byte BE contactID + 8-byte BE dealID              | empty / `nil`| list deals per contact; drives cascade delete      |
+
+There is **no Company index** — Company name/website/industry search and the reverse "records linked
+to a Company" lookup (used by the unlink-on-delete) are in-memory primary-bucket scans, consistent
+with the no-status/stage-index decision below. A legacy on-disk record that still stores `company`
+as a plain string is upgraded to a `CompanyID` reference by an idempotent startup migration
+(find-or-create a Company by name; drop the legacy key).
 
 ### Index maintenance
 - `idx_contact_by_email`: write on contact create; on update, delete the old-email key and write the
@@ -170,11 +204,17 @@ is indexed only as a lookup/dedup hint, never as identity.
   with in-memory filtering. Acceptable because this is a single-user dataset (hundreds–low
   thousands of rows); **no status/stage index in v1.** If volume ever demands it, add
   `idx_lead_by_status` / `idx_deal_by_stage` — that is a spec change.
+- **Companies (list / search by name·website·industry):** full `companies` scan. **Records linked to
+  a Company** (driving unlink-on-delete): scan `leads`, `contacts`, `deals` for a matching
+  `CompanyID`. No company index in v1.
 
 ### Validation enforced at the repository layer
-- `Lead.Name`, `Contact.Name`, `Deal.Title` non-empty.
+- `Lead.Name`, `Contact.Name`, `Deal.Title`, `Company.Name` non-empty.
 - `Lead.Source`, `Lead.Status`, `Deal.Stage` must be one of their enum values.
+- `Lead.Quality`, when set, is an integer `1`–`10` (`0` means unscored).
 - `Deal.ContactID` must reference an existing Contact (checked before write).
+- A non-zero `CompanyID` on a Lead, Contact, or Deal must reference an existing Company (checked
+  before write).
 - `Deal.Currency` is a non-empty 3-letter code when `Value != 0` (recommended always set).
 
 ## Use-Cases
@@ -228,6 +268,20 @@ MCP, or both — all are available on both surfaces unless noted).
     Repo: scan `deals` + `leads`, aggregate in memory. Surfaces: both (TUI Dashboard; MCP
     `pipeline_summary` tool and `crm://pipeline` resource).
 
+### Companies
+19. **Create company** — insert a `Company` (Name required). Repo: `companies.Put`. Surfaces: both.
+20. **List / search companies** — list all, or filter by name/website/industry substring. Repo:
+    scan `companies`. Surfaces: both.
+21. **Get company** — fetch by ID. Repo: `companies.Get`. Surfaces: both.
+22. **Update company** — edit fields. Repo: `companies.Put`. Surfaces: both.
+23. **Delete company (unlink)** — delete the company and reset `CompanyID = 0` on **every** Lead,
+    Contact, and Deal that referenced it, atomically (the records are kept). Returns the count of
+    records unlinked. Repo: scan `leads`/`contacts`/`deals`, rewrite matches, delete the company —
+    all in one `Update`. Surfaces: both.
+
+Linking a Lead, Contact, or Deal to a Company is part of its create/update (UC-1,4,7,10,13,16): the
+record carries an optional `CompanyID`, validated to reference an existing Company.
+
 ## User Stories
 
 ### As the operator using the TUI
@@ -264,22 +318,27 @@ to **stderr** only (stdout is the protocol channel). User/input errors →
 
 | tool              | purpose                              | input (key fields)                                                                 | output                                  |
 |-------------------|--------------------------------------|------------------------------------------------------------------------------------|-----------------------------------------|
-| `create_lead`     | UC-1 add a lead                      | name (req), company, email, phone, tags[], source, notes                           | created Lead                            |
+| `create_lead`     | UC-1 add a lead                      | name (req), company_id?, email, phone, tags[], quality?, source, notes             | created Lead                            |
 | `list_leads`      | UC-2 list/filter leads               | status?                                                                            | { leads: Lead[] }                       |
 | `get_lead`        | UC-3 fetch a lead                    | id (req)                                                                            | Lead                                    |
-| `update_lead`     | UC-4 edit/advance a lead             | id (req) + any editable fields incl. status                                        | updated Lead                            |
+| `update_lead`     | UC-4 edit/advance a lead             | id (req) + any editable fields incl. status, company_id, quality                   | updated Lead                            |
 | `convert_lead`    | UC-5 convert to contact (+deal)      | id (req), make_deal (bool), deal_title?, deal_value?, deal_currency?               | { contact, deal? , lead }               |
 | `delete_lead`     | UC-6 delete a lead                   | id (req)                                                                            | ok                                      |
-| `create_contact`  | UC-7 add a contact                   | name (req), company, email, phone, tags[], notes                                   | created Contact                         |
+| `create_contact`  | UC-7 add a contact                   | name (req), company_id?, email, phone, tags[], notes                               | created Contact                         |
 | `list_contacts`   | UC-8 list/search contacts            | query? (name substring), email?, tag?                                              | { contacts: Contact[] }                 |
 | `get_contact`     | UC-9 fetch a contact                 | id (req)                                                                            | Contact                                 |
-| `update_contact`  | UC-10 edit a contact                 | id (req) + editable fields                                                          | updated Contact                         |
+| `update_contact`  | UC-10 edit a contact                 | id (req) + editable fields incl. company_id                                         | updated Contact                         |
 | `delete_contact`  | UC-11 delete (cascade deals)         | id (req)                                                                            | { deleted_deal_ids[] }                  |
-| `create_deal`     | UC-13 add a deal                     | title (req), contact_id (req), value, currency, stage, notes                       | created Deal                            |
+| `create_deal`     | UC-13 add a deal                     | title (req), contact_id (req), company_id?, value, currency, stage, notes          | created Deal                            |
 | `list_deals`      | UC-14 list/filter deals              | stage?, contact_id?                                                                 | { deals: Deal[] }                       |
 | `get_deal`        | UC-15 fetch a deal                   | id (req)                                                                            | Deal                                    |
-| `update_deal`     | UC-16 edit/advance a deal            | id (req) + editable fields incl. stage                                             | updated Deal                            |
+| `update_deal`     | UC-16 edit/advance a deal            | id (req) + editable fields incl. stage, company_id                                 | updated Deal                            |
 | `delete_deal`     | UC-17 delete a deal                  | id (req)                                                                            | ok                                      |
+| `create_company`  | UC-19 add a company                  | name (req), website?, industry?, phone?, notes?                                     | created Company                         |
+| `list_companies`  | UC-20 list/search companies          | query? (name/website/industry substring)                                           | { companies: Company[] }                |
+| `get_company`     | UC-21 fetch a company                | id (req)                                                                            | Company                                 |
+| `update_company`  | UC-22 edit a company                 | id (req) + editable fields                                                          | updated Company                         |
+| `delete_company`  | UC-23 delete (unlink references)     | id (req)                                                                            | { deleted, unlinked }                   |
 | `pipeline_summary`| UC-18 funnel + pipeline aggregate    | (none)                                                                              | { deals_by_stage[], leads_by_status[] } |
 
 Tools with more than one or two args use typed input structs (`jsonschema` tags) +
@@ -296,6 +355,7 @@ description. A `jsonschema` tag value is a plain description string (the schema 
 | `crm://leads/{id}`    | a single Lead as JSON                     |
 | `crm://contacts/{id}` | a single Contact as JSON                  |
 | `crm://deals/{id}`    | a single Deal as JSON                     |
+| `crm://companies/{id}`| a single Company as JSON                  |
 | `crm://pipeline`      | the pipeline summary (same as UC-18)      |
 
 `{id}` is validated as a numeric ID; unknown IDs return a not-found resource error.
@@ -329,7 +389,7 @@ mutations come back via `QueueUpdateDraw`.
 ```
 
 - **Sidebar** (left, fixed width; `Ctrl-B` collapses; auto-collapses on narrow terminals): the
-  numbered navigation menu and the app's home — there is no separate home screen. It lists the four
+  numbered navigation menu and the app's home — there is no separate home screen. It lists the five
   sections, each with a numeric shortcut and a record-count badge; the active section is highlighted.
 - **Body** (right): a header line (section title · record count) above a `Pages` container whose
   visible page is the current section. Create/edit forms open **full-screen** here; modals layer over
@@ -350,6 +410,8 @@ mutations come back via `QueueUpdateDraw`.
    (UC-7,8,10,11,12).
 4. **Deals** — master-detail of deals; `n` new, `e`/Enter edit, `s` change **stage** (modal), `d`
    delete (UC-13,14,16,17).
+5. **Companies** — master-detail of companies; `n` new, `e`/Enter edit, `d` delete (with a confirm
+   modal naming how many records will be **unlinked**, not deleted) (UC-19,20,22,23).
 
 Every list supports `/` incremental **case-insensitive filter** across the visible columns, `Space`
 **multi-select** with batch actions, `r` reload, and renders one of the mandatory
@@ -358,7 +420,7 @@ detail pane shows absolute ones. Missing values render as a dim em-dash.
 
 ### Keys (no F-keys)
 
-Shared vocabulary: `1`–`4` jump to a section; `↑↓` / `j k` move; `Enter` open/confirm; `Esc`
+Shared vocabulary: `1`–`5` jump to a section; `↑↓` / `j k` move; `Enter` open/confirm; `Esc`
 back / cancel / clear-filter; `Ctrl-B` toggle sidebar; `Tab` cycle sidebar↔table↔detail; `/` filter;
 `Space` toggle row select; `n`/`e`/`d`/`r` row actions; `c` convert (Leads), `s` stage (Deals);
 `Ctrl-S` save (forms); `?` help overlay; `q` / `Ctrl-C` quit. Single letters act while a list is
@@ -367,8 +429,12 @@ focused; Ctrl-chords act in forms/inputs so typing never fires an action.
 ### Forms & confirmation
 
 Create/edit forms are full-screen in the body, one field per row, reused for create and edit (edit
-pre-fills). Validation is **live and per-field** — an inline `[red]` error appears beneath an
-offending field and `Ctrl-S` is blocked while any field is invalid (it focuses the first offender).
+pre-fills). The Lead, Contact, and Deal forms link a Company through a **dropdown picker** (first
+option `— none —`, mapping to no link); Lead and Contact forms edit **Tags** as a single
+comma-separated field, and the Lead form has a **Quality** field (blank, or an integer `1`–`10`,
+live-validated). Validation is **live and per-field** — an inline `[red]` error appears beneath
+an offending field and `Ctrl-S` is blocked while any field is invalid (it focuses the first
+offender).
 `Esc` cancels, prompting `Discard changes? [y/N]` when the form is dirty. Destructive actions confirm
 via a centered modal whose focus **defaults to the safe choice (Cancel)** and which names the target
 and warns it cannot be undone; `y` / Enter-on-Yes confirms, `n` / `Esc` cancels. A batch delete names
@@ -382,7 +448,8 @@ selection is guarded. Below 80×24 the UI shows a centered "Terminal too small" 
 ## Acceptance Criteria
 
 - **UC-1 Create lead:** a lead with a non-empty name persists with a fresh monotonic ID,
-  `Status = new`, and timestamps set; empty name is rejected; invalid `source` is rejected.
+  `Status = new`, and timestamps set; empty name is rejected; invalid `source` is rejected; a
+  `quality` outside `1`–`10` is rejected (`0`/unset is accepted).
 - **UC-2 List leads:** all leads are returned newest-first; filtering by a status returns exactly the
   leads in that status.
 - **UC-3 Get lead:** a known ID returns the lead; an unknown ID returns a clean not-found (no panic).
@@ -415,13 +482,28 @@ selection is guarded. Below 80×24 the UI shows a centered "Terminal too small" 
 - **UC-18 Pipeline summary:** for each deal stage, count and per-currency value totals are correct
   and **never summed across currencies**; lead counts per status are correct; an empty DB yields
   zeroed groups without error.
+- **UC-19…22 Company CRUD:** a company with a non-empty name persists with a fresh monotonic ID and
+  timestamps; empty name is rejected; get returns the record, update persists changes and advances
+  `UpdatedAt` (ID and `CreatedAt` unchanged); list/search returns matches by name/website/industry.
+- **Company link validation:** creating or updating a Lead, Contact, or Deal with a non-zero
+  `CompanyID` that references no existing Company is rejected; `CompanyID = 0` is always accepted; a
+  converted Contact inherits the Lead's `CompanyID`.
+- **UC-23 Delete company (unlink):** deleting a company removes it and resets `CompanyID = 0` on
+  **every** referencing Lead, Contact, and Deal in the same transaction (those records remain and
+  keep their other fields); the returned unlinked count equals the number of records changed; no
+  record references the deleted company afterward.
+- **Legacy migration:** a Lead/Contact persisted with a plain-string `company` is upgraded on open to
+  a `CompanyID` referencing a (find-or-created, deduped-by-name) Company, and the legacy key is
+  dropped; re-running open is a no-op.
 - **MCP:** each tool is reachable through an in-process client; input/business errors come back as
   tool-error results (not transport errors); resources return the right record for a valid ID and a
   not-found error otherwise; logs never touch stdout.
-- **TUI:** all four sections render via a `SimulationScreen`; numeric keys (`1`–`4`) switch sections
+- **TUI:** all five sections render via a `SimulationScreen`; numeric keys (`1`–`5`) switch sections
   and `q` quits; the `?` help overlay opens and closes; `/` filtering narrows a list and `Esc` clears
   it; a create form blocks `Ctrl-S` while a required field is empty and saves once valid; the convert
-  action, the stage-picker modal, and the cascade-delete confirm modal work; no DB call runs on the
+  action, the stage-picker modal, the cascade-delete confirm modal, and the Companies section (with
+  its company picker in the lead/contact/deal forms and the unlink-on-delete confirm) work; the
+  lead/contact "Company" column and detail resolve a `CompanyID` to its name; no DB call runs on the
   event loop.
 - **Concurrency:** two `Store`s open on the same file concurrently (standing in for the TUI and MCP
   processes) can both read and write it, and a write through one is visible through the other —

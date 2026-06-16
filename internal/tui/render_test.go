@@ -8,26 +8,45 @@ import (
 	"github.com/techthos/microapp-crm/internal/models"
 )
 
+// testCompanyName is a fixed CompanyID→name resolver for render tests.
+func testCompanyName(id uint64) string {
+	return map[uint64]string{7: "Acme"}[id]
+}
+
 func TestLeadCells(t *testing.T) {
 	t.Parallel()
 	row := leadCells(models.Lead{
-		ID: 1, Name: "Jane", Company: "Acme", Email: "j@x.io",
-		Status: models.StatusNew, Source: models.SourceWeb,
-	})
-	if row[0] != "1" || row[1] != "Jane" || row[4] != "new" || row[5] != "web" {
+		ID: 1, Name: "Jane", CompanyID: 7, Email: "j@x.io",
+		Status: models.StatusNew, Quality: 8, Source: models.SourceWeb,
+	}, testCompanyName)
+	if row[0] != "1" || row[1] != "Jane" || row[2] != "Acme" || row[4] != "new" || row[5] != "8" || row[6] != "web" {
 		t.Errorf("unexpected lead cells: %v", row)
 	}
 }
 
 func TestContactAndDealCells(t *testing.T) {
 	t.Parallel()
-	crow := contactCells(models.Contact{ID: 2, Name: "Ada", Phone: "555"})
-	if crow[0] != "2" || crow[1] != "Ada" || crow[4] != "555" {
+	crow := contactCells(models.Contact{ID: 2, Name: "Ada", CompanyID: 7, Phone: "555"}, testCompanyName)
+	if crow[0] != "2" || crow[1] != "Ada" || crow[2] != "Acme" || crow[4] != "555" {
 		t.Errorf("contact cells: %v", crow)
 	}
 	drow := dealCells(models.Deal{ID: 3, Title: "Big", ContactID: 2, Value: 1500, Currency: "EUR", Stage: models.StageWon})
 	if drow[0] != "3" || drow[3] != "1500.00" || drow[5] != "won" {
 		t.Errorf("deal cells: %v", drow)
+	}
+}
+
+func TestCompanyCellsAndDetail(t *testing.T) {
+	t.Parallel()
+	row := companyCells(models.Company{ID: 7, Name: "Acme", Industry: "Tech", Website: "acme.io", Phone: "555"})
+	if row[0] != "7" || row[1] != "Acme" || row[2] != "Tech" || row[3] != "acme.io" {
+		t.Errorf("company cells: %v", row)
+	}
+	out := companyDetail(models.Company{Name: "Acme", Industry: "Tech"})
+	for _, want := range []string{"Name:", "Acme", "Industry:", "Tech", "Created:"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("company detail missing %q in:\n%s", want, out)
+		}
 	}
 }
 
@@ -65,8 +84,8 @@ func TestRelSince(t *testing.T) {
 
 func TestLeadDetailShowsFields(t *testing.T) {
 	t.Parallel()
-	out := leadDetail(models.Lead{Name: "Jane", Status: models.StatusNew})
-	for _, want := range []string{"Name:", "Jane", "Status:", "new", "Created:"} {
+	out := leadDetail(models.Lead{Name: "Jane", CompanyID: 7, Tags: []string{"vip"}, Quality: 8, Status: models.StatusNew}, testCompanyName)
+	for _, want := range []string{"Name:", "Jane", "Company:", "Acme", "Tags:", "vip", "Quality:", "8", "Status:", "new", "Created:"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("lead detail missing %q in:\n%s", want, out)
 		}

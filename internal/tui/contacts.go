@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/techthos/microapp-crm/internal/models"
 )
@@ -12,7 +13,7 @@ func newContactsScreen(t *tui) *listScreen[models.Contact] {
 	return newListScreen[models.Contact](t, screenConfig[models.Contact]{
 		page:      pageContacts,
 		cols:      contactCols,
-		cells:     contactCells,
+		cells:     func(c models.Contact) []string { return contactCells(c, t.companyName) },
 		detail:    t.contactDetail,
 		id:        func(c models.Contact) uint64 { return c.ID },
 		emptyHint: "No contacts yet — press n to add one",
@@ -27,7 +28,7 @@ func newContactsScreen(t *tui) *listScreen[models.Contact] {
 // only when a row is highlighted.
 func (t *tui) contactDetail(c models.Contact) string {
 	deals, _ := t.store.DealsForContact(c.ID)
-	return contactDetail(c, deals)
+	return contactDetail(c, deals, t.companyName)
 }
 
 // deleteContacts cascade-deletes the targeted contacts after a batch confirm
@@ -64,16 +65,18 @@ func (t *tui) showContactForm(existing *models.Contact) {
 	}
 	f := newForm(t, title, t.closeForm)
 	f.input("Name", c.Name, required("Name"))
-	f.input("Company", c.Company, nil)
+	f.companyPicker("Company", t.companies.items, c.CompanyID)
 	f.input("Email", c.Email, nil)
 	f.input("Phone", c.Phone, nil)
+	f.input("Tags", strings.Join(c.Tags, ", "), nil)
 	f.input("Notes", c.Notes, nil)
 	f.onSave(func(v map[string]string) {
 		base := c
 		base.Name = v["Name"]
-		base.Company = v["Company"]
+		base.CompanyID = parseUint(v["Company"])
 		base.Email = v["Email"]
 		base.Phone = v["Phone"]
+		base.Tags = splitTags(v["Tags"])
 		base.Notes = v["Notes"]
 		t.mutate(func() error {
 			if base.ID == 0 {

@@ -25,8 +25,9 @@ These are non-negotiable product boundaries from the spec. Do not cross them wit
 - **No** multi-user features (no accounts, ownership, assignment, sharing).
 - **No** currency conversion/FX — monetary totals are reported **per currency**, never summed across
   currencies.
-- **No** separate Tasks, Interactions/activity-log, or Organization entities in v1 — context lives in
-  freeform `notes`; company is a plain string field.
+- **No** separate Tasks or Interactions/activity-log entities in v1 — that context lives in freeform
+  `notes`. **Company is a first-class entity**, though: Leads, Contacts, and Deals optionally link to
+  it by `CompanyID`, and deleting a Company **unlinks** (resets `CompanyID` to 0), never cascade-deletes.
 - **No** networked or cross-machine concurrency. Concurrent TUI + MCP access to the same file *is*
   supported, but only as **local processes on one machine** (connection-per-operation; brief
   per-operation locks, not high write contention).
@@ -95,19 +96,22 @@ refreshes when the MCP process writes. See `docs/bbolt-concurrent-access-strateg
   reverse walk.
 - Values are `encoding/json`; `time.Time` is RFC3339. Models stay backward-compatible (additive
   fields) since old records persist on disk.
-- Primary buckets: `leads`, `contacts`, `deals`. Index buckets: `idx_contact_by_email`
+- Primary buckets: `leads`, `contacts`, `deals`, `companies`. Index buckets: `idx_contact_by_email`
   (`lower(email)\x00` + BE contactID — composite key tolerates duplicate/optional emails) and
   `idx_deal_by_contact` (BE contactID + BE dealID — prefix-scan drives both "deals for a contact"
   and the cascade delete). Bucket names are package-level `[]byte` vars, never inline literals.
 - **No status/stage indexes in v1** — filtering leads-by-status / deals-by-stage is an in-memory
-  scan, acceptable for a single-user dataset. Adding such an index is a spec change.
+  scan, acceptable for a single-user dataset. **Companies have no index either**: name search and the
+  reverse "records linked to a company" scan (driving unlink-on-delete) are primary-bucket scans.
+  Adding such an index is a spec change.
 - Cross-entity operations run in **one `db.Update`** for atomicity: lead conversion
-  (create contact, optional deal, back-reference the lead) and contact delete (cascade-delete its
-  deals + all index entries).
+  (create contact, optional deal, back-reference the lead), contact delete (cascade-delete its
+  deals + all index entries), and company delete (unlink every referencing lead/contact/deal).
 - Validation is enforced at the repository layer: non-empty `Name`/`Title`; valid `Source` /
   `LeadStatus` / `DealStage` enum (`.Valid()` on the enum type); `Deal.ContactID` must reference an
-  existing contact; non-zero `Deal.Value` requires a `Currency`. Use the `ErrNotFound` sentinel;
-  match errors with `errors.Is`, never on string text.
+  existing contact; a non-zero `CompanyID` on a lead/contact/deal must reference an existing company;
+  `Lead.Quality`, when set, is `1`–`10` (`0` = unscored); non-zero `Deal.Value` requires a `Currency`.
+  Use the `ErrNotFound` sentinel; match errors with `errors.Is`, never on string text.
 
 ## Layer-specific rules
 

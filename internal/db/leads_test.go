@@ -37,6 +37,20 @@ func TestCreateLead(t *testing.T) {
 			t.Fatal("expected error, got nil")
 		}
 	})
+
+	t.Run("quality score validated", func(t *testing.T) {
+		// 0 (unscored) and 1–10 are accepted; out-of-range is rejected.
+		for _, q := range []int{0, 1, 10} {
+			if _, err := store.CreateLead(models.Lead{Name: "Q", Quality: q}); err != nil {
+				t.Errorf("CreateLead quality=%d: unexpected error %v", q, err)
+			}
+		}
+		for _, q := range []int{-1, 11, 100} {
+			if _, err := store.CreateLead(models.Lead{Name: "Q", Quality: q}); err == nil {
+				t.Errorf("CreateLead quality=%d: expected error, got nil", q)
+			}
+		}
+	})
 }
 
 func TestListLeads(t *testing.T) {

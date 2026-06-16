@@ -75,8 +75,8 @@ func TestToolSurfaceRegistered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListTools: %v", err)
 	}
-	if got := len(res.Tools); got != 17 {
-		t.Errorf("registered tools = %d, want 17", got)
+	if got := len(res.Tools); got != 22 {
+		t.Errorf("registered tools = %d, want 22", got)
 	}
 }
 
@@ -235,7 +235,10 @@ func TestPrompts(t *testing.T) {
 	t.Parallel()
 	c, ctx := setup(t)
 
-	cres := callTool(t, c, ctx, "create_contact", map[string]any{"name": "Ada", "company": "Analytical"})
+	comp := callTool(t, c, ctx, "create_company", map[string]any{"name": "Analytical"})
+	var company models.Company
+	_ = json.Unmarshal([]byte(resultText(t, comp)), &company)
+	cres := callTool(t, c, ctx, "create_contact", map[string]any{"name": "Ada", "company_id": company.ID})
 	var contact models.Contact
 	_ = json.Unmarshal([]byte(resultText(t, cres)), &contact)
 	_ = callTool(t, c, ctx, "create_lead", map[string]any{"name": "Fresh"})

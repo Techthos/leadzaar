@@ -155,10 +155,12 @@ func TestSearchContacts(t *testing.T) {
 	t.Parallel()
 	store := openTestStore(t, newClock())
 
-	if _, err := store.CreateContact(models.Contact{Name: "Alan Turing", Company: "Bletchley", Tags: []string{"vip"}}); err != nil {
+	bletchley, _ := store.CreateCompany(models.Company{Name: "Bletchley"})
+	acme, _ := store.CreateCompany(models.Company{Name: "Acme"})
+	if _, err := store.CreateContact(models.Contact{Name: "Alan Turing", CompanyID: bletchley.ID, Tags: []string{"vip"}}); err != nil {
 		t.Fatalf("CreateContact: %v", err)
 	}
-	if _, err := store.CreateContact(models.Contact{Name: "Bob", Company: "Acme"}); err != nil {
+	if _, err := store.CreateContact(models.Contact{Name: "Bob", CompanyID: acme.ID}); err != nil {
 		t.Fatalf("CreateContact: %v", err)
 	}
 

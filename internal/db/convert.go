@@ -58,7 +58,7 @@ func (s *Store) Convert(leadID uint64, opts ConvertOptions) (ConvertResult, erro
 		// 1. Contact mirrors the lead.
 		contact := models.Contact{
 			Name:         lead.Name,
-			Company:      lead.Company,
+			CompanyID:    lead.CompanyID,
 			Email:        lead.Email,
 			Phone:        lead.Phone,
 			Tags:         lead.Tags,

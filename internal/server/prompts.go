@@ -35,10 +35,14 @@ func (h *handlers) triageNewLeads(_ context.Context, _ mcp.GetPromptRequest) (*m
 	if err != nil {
 		return nil, err
 	}
+	names, err := h.store.CompanyNames()
+	if err != nil {
+		return nil, err
+	}
 	var b strings.Builder
 	b.WriteString("Triage these open leads. For each, recommend the next status (contacted/qualified/lost) and a concrete next action.\n\n")
-	writeLeadLines(&b, "NEW", newLeads)
-	writeLeadLines(&b, "CONTACTED", contacted)
+	writeLeadLines(&b, "NEW", newLeads, names)
+	writeLeadLines(&b, "CONTACTED", contacted, names)
 	if len(newLeads)+len(contacted) == 0 {
 		b.WriteString("(No open leads to triage.)\n")
 	}
@@ -59,10 +63,17 @@ func (h *handlers) draftFollowup(_ context.Context, req mcp.GetPromptRequest) (*
 		return nil, err
 	}
 
+	var companyName string
+	if contact.CompanyID != 0 {
+		if company, cerr := h.store.GetCompany(contact.CompanyID); cerr == nil {
+			companyName = company.Name
+		}
+	}
+
 	var b strings.Builder
 	fmt.Fprintf(&b, "Draft a short, friendly follow-up message to %s", contact.Name)
-	if contact.Company != "" {
-		fmt.Fprintf(&b, " (%s)", contact.Company)
+	if companyName != "" {
+		fmt.Fprintf(&b, " (%s)", companyName)
 	}
 	b.WriteString(".\n")
 	if contact.Notes != "" {
@@ -86,16 +97,17 @@ func (h *handlers) draftFollowup(_ context.Context, req mcp.GetPromptRequest) (*
 	), nil
 }
 
-// writeLeadLines appends a labelled block of "#id name (company)" lines.
-func writeLeadLines(b *strings.Builder, label string, leads []models.Lead) {
+// writeLeadLines appends a labelled block of "#id name (company)" lines. The
+// company name is resolved from names by the lead's CompanyID.
+func writeLeadLines(b *strings.Builder, label string, leads []models.Lead, names map[uint64]string) {
 	if len(leads) == 0 {
 		return
 	}
 	fmt.Fprintf(b, "%s:\n", label)
 	for _, l := range leads {
 		fmt.Fprintf(b, "  #%d %s", l.ID, l.Name)
-		if l.Company != "" {
-			fmt.Fprintf(b, " (%s)", l.Company)
+		if name := names[l.CompanyID]; name != "" {
+			fmt.Fprintf(b, " (%s)", name)
 		}
 		b.WriteString("\n")
 	}

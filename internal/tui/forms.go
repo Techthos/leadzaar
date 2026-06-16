@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/rivo/tview"
+	"github.com/techthos/microapp-crm/internal/models"
 )
 
 // formField is one labeled input, its inline error line, and its validator.
@@ -83,6 +84,35 @@ func (f *formView) dropdown(label string, opts []string, current int) {
 	ff := &formField{label: label, item: dd, errTV: newErrTV(), value: func() string {
 		_, o := dd.GetCurrentOption()
 		return o
+	}}
+	dd.SetSelectedFunc(func(string, int) { f.dirty = true })
+	f.append(ff)
+}
+
+// companyPicker adds a dropdown for linking a Company. The first option is a
+// "— none —" entry mapping to ID 0; value() returns the selected company ID as a
+// decimal string (resolved via a parallel ID slice so duplicate names are
+// unambiguous). currentID pre-selects the linked company on edit.
+func (f *formView) companyPicker(label string, companies []models.Company, currentID uint64) {
+	opts := make([]string, 0, len(companies)+1)
+	ids := make([]uint64, 0, len(companies)+1)
+	opts = append(opts, "— none —")
+	ids = append(ids, 0)
+	current := 0
+	for i, c := range companies {
+		opts = append(opts, c.Name)
+		ids = append(ids, c.ID)
+		if c.ID == currentID {
+			current = i + 1
+		}
+	}
+	dd := tview.NewDropDown().SetLabel(label+": ").SetOptions(opts, nil).SetCurrentOption(current)
+	ff := &formField{label: label, item: dd, errTV: newErrTV(), value: func() string {
+		idx, _ := dd.GetCurrentOption()
+		if idx < 0 || idx >= len(ids) {
+			return "0"
+		}
+		return strconv.FormatUint(ids[idx], 10)
 	}}
 	dd.SetSelectedFunc(func(string, int) { f.dirty = true })
 	f.append(ff)
@@ -177,6 +207,19 @@ func required(field string) func(string) string {
 		}
 		return ""
 	}
+}
+
+// qualityValidator accepts a blank value (unscored) or an integer in 1–10.
+func qualityValidator(v string) string {
+	s := strings.TrimSpace(v)
+	if s == "" {
+		return ""
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 1 || n > 10 {
+		return "Quality must be 1–10 (or blank)"
+	}
+	return ""
 }
 
 // parseFloat parses a money input; a blank or invalid value is 0.

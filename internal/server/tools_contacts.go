@@ -9,12 +9,12 @@ import (
 )
 
 type createContactArgs struct {
-	Name    string   `json:"name" jsonschema:"Contact name (required)"`
-	Company string   `json:"company,omitempty" jsonschema:"Company name"`
-	Email   string   `json:"email,omitempty" jsonschema:"Email address"`
-	Phone   string   `json:"phone,omitempty" jsonschema:"Phone number"`
-	Tags    []string `json:"tags,omitempty" jsonschema:"Freeform tags"`
-	Notes   string   `json:"notes,omitempty" jsonschema:"Freeform notes"`
+	Name      string   `json:"name" jsonschema:"Contact name (required)"`
+	CompanyID uint64   `json:"company_id,omitempty" jsonschema:"Linked Company id (0 or omitted = none)"`
+	Email     string   `json:"email,omitempty" jsonschema:"Email address"`
+	Phone     string   `json:"phone,omitempty" jsonschema:"Phone number"`
+	Tags      []string `json:"tags,omitempty" jsonschema:"Freeform tags"`
+	Notes     string   `json:"notes,omitempty" jsonschema:"Freeform notes"`
 }
 
 type listContactsArgs struct {
@@ -24,13 +24,13 @@ type listContactsArgs struct {
 }
 
 type updateContactArgs struct {
-	ID      uint64   `json:"id" jsonschema:"Contact id"`
-	Name    string   `json:"name" jsonschema:"Contact name (required)"`
-	Company string   `json:"company,omitempty" jsonschema:"Company name"`
-	Email   string   `json:"email,omitempty" jsonschema:"Email address"`
-	Phone   string   `json:"phone,omitempty" jsonschema:"Phone number"`
-	Tags    []string `json:"tags,omitempty" jsonschema:"Freeform tags"`
-	Notes   string   `json:"notes,omitempty" jsonschema:"Freeform notes"`
+	ID        uint64   `json:"id" jsonschema:"Contact id"`
+	Name      string   `json:"name" jsonschema:"Contact name (required)"`
+	CompanyID uint64   `json:"company_id,omitempty" jsonschema:"Linked Company id (0 = unlink)"`
+	Email     string   `json:"email,omitempty" jsonschema:"Email address"`
+	Phone     string   `json:"phone,omitempty" jsonschema:"Phone number"`
+	Tags      []string `json:"tags,omitempty" jsonschema:"Freeform tags"`
+	Notes     string   `json:"notes,omitempty" jsonschema:"Freeform notes"`
 }
 
 func (h *handlers) registerContactTools(s *server.MCPServer) {
@@ -67,7 +67,7 @@ func (h *handlers) registerContactTools(s *server.MCPServer) {
 
 func (h *handlers) createContact(_ context.Context, _ mcp.CallToolRequest, a createContactArgs) (*mcp.CallToolResult, error) {
 	c, err := h.store.CreateContact(models.Contact{
-		Name: a.Name, Company: a.Company, Email: a.Email, Phone: a.Phone, Tags: a.Tags, Notes: a.Notes,
+		Name: a.Name, CompanyID: a.CompanyID, Email: a.Email, Phone: a.Phone, Tags: a.Tags, Notes: a.Notes,
 	})
 	if err != nil {
 		return toolErr(err)
@@ -104,7 +104,7 @@ func (h *handlers) getContact(_ context.Context, _ mcp.CallToolRequest, a idArg)
 
 func (h *handlers) updateContact(_ context.Context, _ mcp.CallToolRequest, a updateContactArgs) (*mcp.CallToolResult, error) {
 	c, err := h.store.UpdateContact(models.Contact{
-		ID: a.ID, Name: a.Name, Company: a.Company, Email: a.Email, Phone: a.Phone, Tags: a.Tags, Notes: a.Notes,
+		ID: a.ID, Name: a.Name, CompanyID: a.CompanyID, Email: a.Email, Phone: a.Phone, Tags: a.Tags, Notes: a.Notes,
 	})
 	if err != nil {
 		return toolErr(err)

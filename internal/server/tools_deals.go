@@ -12,6 +12,7 @@ import (
 type createDealArgs struct {
 	Title     string  `json:"title" jsonschema:"Deal title (required)"`
 	ContactID uint64  `json:"contact_id" jsonschema:"Owning contact id (must exist)"`
+	CompanyID uint64  `json:"company_id,omitempty" jsonschema:"Linked Company id (0 or omitted = none)"`
 	Value     float64 `json:"value,omitempty" jsonschema:"Monetary value"`
 	Currency  string  `json:"currency,omitempty" jsonschema:"3-letter currency code (required for non-zero value)"`
 	Stage     string  `json:"stage" jsonschema:"Stage: qualification, proposal, negotiation, won, lost"`
@@ -27,6 +28,7 @@ type updateDealArgs struct {
 	ID        uint64  `json:"id" jsonschema:"Deal id"`
 	Title     string  `json:"title" jsonschema:"Deal title (required)"`
 	ContactID uint64  `json:"contact_id" jsonschema:"Owning contact id"`
+	CompanyID uint64  `json:"company_id,omitempty" jsonschema:"Linked Company id (0 = unlink)"`
 	Value     float64 `json:"value,omitempty" jsonschema:"Monetary value"`
 	Currency  string  `json:"currency,omitempty" jsonschema:"3-letter currency code"`
 	Stage     string  `json:"stage" jsonschema:"Stage enum"`
@@ -67,7 +69,7 @@ func (h *handlers) registerDealTools(s *server.MCPServer) {
 
 func (h *handlers) createDeal(_ context.Context, _ mcp.CallToolRequest, a createDealArgs) (*mcp.CallToolResult, error) {
 	d, err := h.store.CreateDeal(models.Deal{
-		Title: a.Title, ContactID: a.ContactID, Value: a.Value, Currency: a.Currency,
+		Title: a.Title, ContactID: a.ContactID, CompanyID: a.CompanyID, Value: a.Value, Currency: a.Currency,
 		Stage: models.DealStage(a.Stage), Notes: a.Notes,
 	})
 	if err != nil {
@@ -94,7 +96,7 @@ func (h *handlers) getDeal(_ context.Context, _ mcp.CallToolRequest, a idArg) (*
 
 func (h *handlers) updateDeal(_ context.Context, _ mcp.CallToolRequest, a updateDealArgs) (*mcp.CallToolResult, error) {
 	d, err := h.store.UpdateDeal(models.Deal{
-		ID: a.ID, Title: a.Title, ContactID: a.ContactID, Value: a.Value, Currency: a.Currency,
+		ID: a.ID, Title: a.Title, ContactID: a.ContactID, CompanyID: a.CompanyID, Value: a.Value, Currency: a.Currency,
 		Stage: models.DealStage(a.Stage), Notes: a.Notes,
 	})
 	if err != nil {

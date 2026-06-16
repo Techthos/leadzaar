@@ -14,8 +14,9 @@ func TestConvert(t *testing.T) {
 	t.Run("contact only mirrors lead and marks converted", func(t *testing.T) {
 		t.Parallel()
 		store := openTestStore(t, newClock())
+		acme, _ := store.CreateCompany(models.Company{Name: "Acme"})
 		lead, _ := store.CreateLead(models.Lead{
-			Name: "Jane", Company: "Acme", Email: "jane@example.com", Tags: []string{"vip"},
+			Name: "Jane", CompanyID: acme.ID, Email: "jane@example.com", Tags: []string{"vip"},
 		})
 
 		res, err := store.Convert(lead.ID, db.ConvertOptions{})
@@ -27,6 +28,9 @@ func TestConvert(t *testing.T) {
 		}
 		if res.Contact.Name != "Jane" || res.Contact.Email != "jane@example.com" {
 			t.Errorf("contact did not mirror lead: %+v", res.Contact)
+		}
+		if res.Contact.CompanyID != acme.ID {
+			t.Errorf("contact CompanyID = %d, want %d (inherited from lead)", res.Contact.CompanyID, acme.ID)
 		}
 		if res.Contact.SourceLeadID != lead.ID {
 			t.Errorf("SourceLeadID = %d, want %d", res.Contact.SourceLeadID, lead.ID)

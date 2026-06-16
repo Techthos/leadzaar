@@ -12,7 +12,7 @@ func newDealsScreen(t *tui) *listScreen[models.Deal] {
 		page:      pageDeals,
 		cols:      dealCols,
 		cells:     dealCells,
-		detail:    dealDetail,
+		detail:    func(d models.Deal) string { return dealDetail(d, t.companyName) },
 		id:        func(d models.Deal) uint64 { return d.ID },
 		emptyHint: "No deals yet — press n to add one",
 		hints:     "n new · e edit · s stage · d delete · / filter · r reload",
@@ -58,6 +58,7 @@ func (t *tui) showDealForm(existing *models.Deal) {
 	f := newForm(t, title, t.closeForm)
 	f.input("Title", d.Title, required("Title"))
 	f.numInput("Contact ID", uintField(d.ContactID), acceptInt, required("Contact ID"))
+	f.companyPicker("Company", t.companies.items, d.CompanyID)
 	f.numInput("Value", formatMoney(d.Value), acceptFloat, nil)
 	f.input("Currency", d.Currency, nil)
 	f.dropdown("Stage", stages, indexOf(stages, string(d.Stage)))
@@ -68,6 +69,7 @@ func (t *tui) showDealForm(existing *models.Deal) {
 		base := d
 		base.Title = v["Title"]
 		base.ContactID = parseUint(v["Contact ID"])
+		base.CompanyID = parseUint(v["Company"])
 		base.Value = parseFloat(v["Value"])
 		base.Currency = v["Currency"]
 		base.Stage = models.DealStage(v["Stage"])

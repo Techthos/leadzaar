@@ -9,10 +9,11 @@ import "time"
 type Lead struct {
 	ID        uint64     `json:"id"`
 	Name      string     `json:"name"`
-	Company   string     `json:"company,omitempty"`
+	CompanyID uint64     `json:"companyId,omitempty"` // 0 = no linked Company
 	Email     string     `json:"email,omitempty"`
 	Phone     string     `json:"phone,omitempty"`
 	Tags      []string   `json:"tags,omitempty"`
+	Quality   int        `json:"quality,omitempty"` // lead score 1–10; 0 = unscored
 	Source    Source     `json:"source,omitempty"`
 	Status    LeadStatus `json:"status"`
 	Notes     string     `json:"notes,omitempty"`
@@ -27,7 +28,7 @@ type Lead struct {
 type Contact struct {
 	ID           uint64    `json:"id"`
 	Name         string    `json:"name"`
-	Company      string    `json:"company,omitempty"`
+	CompanyID    uint64    `json:"companyId,omitempty"` // 0 = no linked Company
 	Email        string    `json:"email,omitempty"`
 	Phone        string    `json:"phone,omitempty"`
 	Tags         []string  `json:"tags,omitempty"`
@@ -43,9 +44,25 @@ type Deal struct {
 	ID        uint64    `json:"id"`
 	Title     string    `json:"title"`
 	ContactID uint64    `json:"contactId"`
+	CompanyID uint64    `json:"companyId,omitempty"` // 0 = no linked Company
 	Value     float64   `json:"value"`
 	Currency  string    `json:"currency,omitempty"`
 	Stage     DealStage `json:"stage"`
+	Notes     string    `json:"notes,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+// Company is an organization that Leads, Contacts, and Deals may optionally link
+// to by ID (CompanyID). Identity is the surrogate ID. Deleting a Company unlinks
+// it from any referencing records (their CompanyID is reset to 0); the records
+// themselves are retained. Company has no funnel state — it is reference data.
+type Company struct {
+	ID        uint64    `json:"id"`
+	Name      string    `json:"name"`
+	Website   string    `json:"website,omitempty"`
+	Industry  string    `json:"industry,omitempty"`
+	Phone     string    `json:"phone,omitempty"`
 	Notes     string    `json:"notes,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`

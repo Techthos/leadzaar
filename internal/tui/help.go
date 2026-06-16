@@ -10,7 +10,7 @@ import (
 const helpText = `[::b]microapp-crm — keys[::-]
 
 [::b]Navigation[::-]
-  1–4         jump to a section (Dashboard, Leads, Contacts, Deals)
+  1–5         jump to a section (Dashboard, Leads, Contacts, Deals, Companies)
   ↑ ↓ / j k   move selection
   Tab         cycle sidebar ↔ table ↔ detail
   Ctrl-B      toggle the sidebar
