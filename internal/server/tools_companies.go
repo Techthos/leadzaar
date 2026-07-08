@@ -20,13 +20,15 @@ type listCompaniesArgs struct {
 	Query string `json:"query,omitempty" jsonschema:"Substring match on name/website/industry (blank = all)"`
 }
 
+// updateCompanyArgs is a partial update: only id is required; omitted editable
+// fields keep their stored value (see setIf and h.updateCompany).
 type updateCompanyArgs struct {
-	ID       uint64 `json:"id" jsonschema:"Company id"`
-	Name     string `json:"name" jsonschema:"Company name (required)"`
-	Website  string `json:"website,omitempty" jsonschema:"Website URL"`
-	Industry string `json:"industry,omitempty" jsonschema:"Industry"`
-	Phone    string `json:"phone,omitempty" jsonschema:"Phone number"`
-	Notes    string `json:"notes,omitempty" jsonschema:"Freeform notes"`
+	ID       uint64  `json:"id" jsonschema:"Company id (required)"`
+	Name     *string `json:"name,omitempty" jsonschema:"Company name; omit to keep, must be non-empty if set"`
+	Website  *string `json:"website,omitempty" jsonschema:"Website URL; omit to keep"`
+	Industry *string `json:"industry,omitempty" jsonschema:"Industry; omit to keep"`
+	Phone    *string `json:"phone,omitempty" jsonschema:"Phone number; omit to keep"`
+	Notes    *string `json:"notes,omitempty" jsonschema:"Freeform notes; omit to keep"`
 }
 
 func (h *handlers) registerCompanyTools(s *server.MCPServer) {
@@ -88,13 +90,20 @@ func (h *handlers) getCompany(_ context.Context, _ mcp.CallToolRequest, a idArg)
 }
 
 func (h *handlers) updateCompany(_ context.Context, _ mcp.CallToolRequest, a updateCompanyArgs) (*mcp.CallToolResult, error) {
-	c, err := h.store.UpdateCompany(models.Company{
-		ID: a.ID, Name: a.Name, Website: a.Website, Industry: a.Industry, Phone: a.Phone, Notes: a.Notes,
-	})
+	c, err := h.store.GetCompany(a.ID)
 	if err != nil {
 		return toolErr(err)
 	}
-	return jsonResult(c)
+	setIf(&c.Name, a.Name)
+	setIf(&c.Website, a.Website)
+	setIf(&c.Industry, a.Industry)
+	setIf(&c.Phone, a.Phone)
+	setIf(&c.Notes, a.Notes)
+	updated, err := h.store.UpdateCompany(c)
+	if err != nil {
+		return toolErr(err)
+	}
+	return jsonResult(updated)
 }
 
 func (h *handlers) deleteCompany(_ context.Context, _ mcp.CallToolRequest, a idArg) (*mcp.CallToolResult, error) {

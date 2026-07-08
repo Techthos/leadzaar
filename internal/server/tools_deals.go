@@ -24,15 +24,17 @@ type listDealsArgs struct {
 	ContactID uint64 `json:"contact_id,omitempty" jsonschema:"Filter by owning contact id (0 = all)"`
 }
 
+// updateDealArgs is a partial update: only id is required; omitted editable
+// fields keep their stored value (see setIf and h.updateDeal).
 type updateDealArgs struct {
-	ID        uint64  `json:"id" jsonschema:"Deal id"`
-	Title     string  `json:"title" jsonschema:"Deal title (required)"`
-	ContactID uint64  `json:"contact_id" jsonschema:"Owning contact id"`
-	CompanyID uint64  `json:"company_id,omitempty" jsonschema:"Linked Company id (0 = unlink)"`
-	Value     float64 `json:"value,omitempty" jsonschema:"Monetary value"`
-	Currency  string  `json:"currency,omitempty" jsonschema:"3-letter currency code"`
-	Stage     string  `json:"stage" jsonschema:"Stage enum"`
-	Notes     string  `json:"notes,omitempty" jsonschema:"Freeform notes"`
+	ID        uint64   `json:"id" jsonschema:"Deal id (required)"`
+	Title     *string  `json:"title,omitempty" jsonschema:"Deal title; omit to keep, must be non-empty if set"`
+	ContactID *uint64  `json:"contact_id,omitempty" jsonschema:"Owning contact id; omit to keep"`
+	CompanyID *uint64  `json:"company_id,omitempty" jsonschema:"Linked Company id (0 = unlink); omit to keep"`
+	Value     *float64 `json:"value,omitempty" jsonschema:"Monetary value; omit to keep"`
+	Currency  *string  `json:"currency,omitempty" jsonschema:"3-letter currency code; omit to keep"`
+	Stage     *string  `json:"stage,omitempty" jsonschema:"Stage enum; omit to keep"`
+	Notes     *string  `json:"notes,omitempty" jsonschema:"Freeform notes; omit to keep"`
 }
 
 func (h *handlers) registerDealTools(s *server.MCPServer) {
@@ -95,14 +97,24 @@ func (h *handlers) getDeal(_ context.Context, _ mcp.CallToolRequest, a idArg) (*
 }
 
 func (h *handlers) updateDeal(_ context.Context, _ mcp.CallToolRequest, a updateDealArgs) (*mcp.CallToolResult, error) {
-	d, err := h.store.UpdateDeal(models.Deal{
-		ID: a.ID, Title: a.Title, ContactID: a.ContactID, CompanyID: a.CompanyID, Value: a.Value, Currency: a.Currency,
-		Stage: models.DealStage(a.Stage), Notes: a.Notes,
-	})
+	d, err := h.store.GetDeal(a.ID)
 	if err != nil {
 		return toolErr(err)
 	}
-	return jsonResult(d)
+	setIf(&d.Title, a.Title)
+	setIf(&d.ContactID, a.ContactID)
+	setIf(&d.CompanyID, a.CompanyID)
+	setIf(&d.Value, a.Value)
+	setIf(&d.Currency, a.Currency)
+	setIf(&d.Notes, a.Notes)
+	if a.Stage != nil {
+		d.Stage = models.DealStage(*a.Stage)
+	}
+	updated, err := h.store.UpdateDeal(d)
+	if err != nil {
+		return toolErr(err)
+	}
+	return jsonResult(updated)
 }
 
 func (h *handlers) deleteDeal(_ context.Context, _ mcp.CallToolRequest, a idArg) (*mcp.CallToolResult, error) {

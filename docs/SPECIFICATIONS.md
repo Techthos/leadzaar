@@ -524,8 +524,9 @@ selection is guarded. Below 80×24 the UI shows a centered "Terminal too small" 
   with `page_size` clamped to `[1, 50]` (default 50), and the response reports `total`,
   `total_pages`, and `has_more` for the full filtered set. An invalid status or `sort_by` is rejected.
 - **UC-3 Get lead:** a known ID returns the lead; an unknown ID returns a clean not-found (no panic).
-- **UC-4 Update lead:** edited fields persist, `UpdatedAt` advances, ID and `CreatedAt` are
-  unchanged; an invalid status value is rejected.
+- **UC-4 Update lead:** a **partial update** — only supplied fields change; any field the caller
+  omits keeps its stored value (an explicit empty value clears it). Edited fields persist,
+  `UpdatedAt` advances, ID and `CreatedAt` are unchanged; an invalid status value is rejected.
 - **UC-5 Convert lead:** converting a non-converted lead creates a Contact whose fields mirror the
   lead and whose `SourceLeadID` is the lead; with `make_deal` it also creates a Deal for that contact
   with the given value/currency; the lead becomes `converted` with `ContactID` (and `DealID`) set;

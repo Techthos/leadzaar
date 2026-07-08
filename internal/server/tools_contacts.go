@@ -23,14 +23,16 @@ type listContactsArgs struct {
 	Tag   string `json:"tag,omitempty" jsonschema:"Match contacts carrying this tag"`
 }
 
+// updateContactArgs is a partial update: only id is required; omitted editable
+// fields keep their stored value (see setIf and h.updateContact).
 type updateContactArgs struct {
-	ID        uint64   `json:"id" jsonschema:"Contact id"`
-	Name      string   `json:"name" jsonschema:"Contact name (required)"`
-	CompanyID uint64   `json:"company_id,omitempty" jsonschema:"Linked Company id (0 = unlink)"`
-	Email     string   `json:"email,omitempty" jsonschema:"Email address"`
-	Phone     string   `json:"phone,omitempty" jsonschema:"Phone number"`
-	Tags      []string `json:"tags,omitempty" jsonschema:"Freeform tags"`
-	Notes     string   `json:"notes,omitempty" jsonschema:"Freeform notes"`
+	ID        uint64   `json:"id" jsonschema:"Contact id (required)"`
+	Name      *string  `json:"name,omitempty" jsonschema:"Contact name; omit to keep, must be non-empty if set"`
+	CompanyID *uint64  `json:"company_id,omitempty" jsonschema:"Linked Company id (0 = unlink); omit to keep"`
+	Email     *string  `json:"email,omitempty" jsonschema:"Email address; omit to keep"`
+	Phone     *string  `json:"phone,omitempty" jsonschema:"Phone number; omit to keep"`
+	Tags      []string `json:"tags,omitempty" jsonschema:"Freeform tags; omit to keep, send [] to clear"`
+	Notes     *string  `json:"notes,omitempty" jsonschema:"Freeform notes; omit to keep"`
 }
 
 func (h *handlers) registerContactTools(s *server.MCPServer) {
@@ -103,13 +105,23 @@ func (h *handlers) getContact(_ context.Context, _ mcp.CallToolRequest, a idArg)
 }
 
 func (h *handlers) updateContact(_ context.Context, _ mcp.CallToolRequest, a updateContactArgs) (*mcp.CallToolResult, error) {
-	c, err := h.store.UpdateContact(models.Contact{
-		ID: a.ID, Name: a.Name, CompanyID: a.CompanyID, Email: a.Email, Phone: a.Phone, Tags: a.Tags, Notes: a.Notes,
-	})
+	c, err := h.store.GetContact(a.ID)
 	if err != nil {
 		return toolErr(err)
 	}
-	return jsonResult(c)
+	setIf(&c.Name, a.Name)
+	setIf(&c.CompanyID, a.CompanyID)
+	setIf(&c.Email, a.Email)
+	setIf(&c.Phone, a.Phone)
+	setIf(&c.Notes, a.Notes)
+	if a.Tags != nil {
+		c.Tags = a.Tags
+	}
+	updated, err := h.store.UpdateContact(c)
+	if err != nil {
+		return toolErr(err)
+	}
+	return jsonResult(updated)
 }
 
 func (h *handlers) deleteContact(_ context.Context, _ mcp.CallToolRequest, a idArg) (*mcp.CallToolResult, error) {

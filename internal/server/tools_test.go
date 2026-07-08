@@ -282,6 +282,145 @@ func TestListLeadsPaginationAndSearch(t *testing.T) {
 	})
 }
 
+// TestUpdateToolsPartialPreservesOtherFields is the regression guard for the
+// "update one field, the rest get nulled" bug: the update_* tools are partial
+// updates, so a call that supplies only some fields must leave every omitted
+// field at its stored value. It also confirms an explicitly supplied empty
+// string clears a field, and that omitting tags keeps them.
+func TestUpdateToolsPartialPreservesOtherFields(t *testing.T) {
+	t.Parallel()
+	c, ctx := setup(t)
+
+	t.Run("lead: change only status keeps the rest", func(t *testing.T) {
+		var lead models.Lead
+		mustJSON(t, callTool(t, c, ctx, "create_lead", map[string]any{
+			"name": "Jane", "email": "jane@x.io", "phone": "555-1", "tags": []string{"vip", "warm"},
+			"quality": 7, "source": "referral", "notes": "met at expo",
+		}), &lead)
+
+		var got models.Lead
+		mustJSON(t, callTool(t, c, ctx, "update_lead", map[string]any{
+			"id": lead.ID, "status": "qualified",
+		}), &got)
+
+		if got.Status != models.StatusQualified {
+			t.Errorf("status = %q, want qualified", got.Status)
+		}
+		if got.Name != "Jane" || got.Email != "jane@x.io" || got.Phone != "555-1" ||
+			got.Quality != 7 || got.Source != models.SourceReferral || got.Notes != "met at expo" {
+			t.Errorf("omitted scalar field not preserved: %+v", got)
+		}
+		if !equalStrings(got.Tags, []string{"vip", "warm"}) {
+			t.Errorf("tags = %v, want [vip warm]", got.Tags)
+		}
+	})
+
+	t.Run("contact: change only name keeps email/phone/tags/notes", func(t *testing.T) {
+		var contact models.Contact
+		mustJSON(t, callTool(t, c, ctx, "create_contact", map[string]any{
+			"name": "Old", "email": "c@x.io", "phone": "555-2", "tags": []string{"lead"}, "notes": "keep me",
+		}), &contact)
+
+		var got models.Contact
+		mustJSON(t, callTool(t, c, ctx, "update_contact", map[string]any{
+			"id": contact.ID, "name": "New",
+		}), &got)
+
+		if got.Name != "New" || got.Email != "c@x.io" || got.Phone != "555-2" || got.Notes != "keep me" {
+			t.Errorf("partial update lost a field: %+v", got)
+		}
+		if !equalStrings(got.Tags, []string{"lead"}) {
+			t.Errorf("tags = %v, want [lead]", got.Tags)
+		}
+	})
+
+	t.Run("deal: change only stage keeps title/value/currency/notes", func(t *testing.T) {
+		var contact models.Contact
+		mustJSON(t, callTool(t, c, ctx, "create_contact", map[string]any{"name": "Owner"}), &contact)
+		var deal models.Deal
+		mustJSON(t, callTool(t, c, ctx, "create_deal", map[string]any{
+			"title": "Big", "contact_id": contact.ID, "value": 5000.0, "currency": "USD",
+			"stage": "proposal", "notes": "hot",
+		}), &deal)
+
+		var got models.Deal
+		mustJSON(t, callTool(t, c, ctx, "update_deal", map[string]any{
+			"id": deal.ID, "stage": "won",
+		}), &got)
+
+		if got.Stage != models.StageWon {
+			t.Errorf("stage = %q, want won", got.Stage)
+		}
+		if got.Title != "Big" || got.Value != 5000.0 || got.Currency != "USD" || got.Notes != "hot" || got.ContactID != contact.ID {
+			t.Errorf("partial update lost a field: %+v", got)
+		}
+	})
+
+	t.Run("company: change only website keeps name/industry/phone/notes", func(t *testing.T) {
+		var company models.Company
+		mustJSON(t, callTool(t, c, ctx, "create_company", map[string]any{
+			"name": "Acme", "website": "old.io", "industry": "Tech", "phone": "555-3", "notes": "n",
+		}), &company)
+
+		var got models.Company
+		mustJSON(t, callTool(t, c, ctx, "update_company", map[string]any{
+			"id": company.ID, "website": "new.io",
+		}), &got)
+
+		if got.Website != "new.io" || got.Name != "Acme" || got.Industry != "Tech" || got.Phone != "555-3" || got.Notes != "n" {
+			t.Errorf("partial update lost a field: %+v", got)
+		}
+	})
+
+	t.Run("offer: change only body keeps title/description/subject", func(t *testing.T) {
+		var lead models.Lead
+		mustJSON(t, callTool(t, c, ctx, "create_lead", map[string]any{"name": "P"}), &lead)
+		var offer models.Offer
+		mustJSON(t, callTool(t, c, ctx, "create_offer", map[string]any{
+			"lead_id": lead.ID, "title": "T", "description": "d", "subject": "s", "body": "old",
+		}), &offer)
+
+		var got models.Offer
+		mustJSON(t, callTool(t, c, ctx, "update_offer", map[string]any{
+			"id": offer.ID, "lead_id": lead.ID, "body": "new",
+		}), &got)
+
+		if got.Body != "new" || got.Title != "T" || got.Description != "d" || got.Subject != "s" {
+			t.Errorf("partial update lost a field: %+v", got)
+		}
+	})
+
+	t.Run("explicit empty string clears a field", func(t *testing.T) {
+		var lead models.Lead
+		mustJSON(t, callTool(t, c, ctx, "create_lead", map[string]any{"name": "N", "notes": "remove me"}), &lead)
+
+		var got models.Lead
+		mustJSON(t, callTool(t, c, ctx, "update_lead", map[string]any{
+			"id": lead.ID, "notes": "",
+		}), &got)
+
+		if got.Notes != "" {
+			t.Errorf("notes = %q, want cleared", got.Notes)
+		}
+		if got.Name != "N" {
+			t.Errorf("name = %q, want preserved", got.Name)
+		}
+	})
+}
+
+// equalStrings reports whether two string slices have the same elements in order.
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // mustJSON asserts a successful tool result and unmarshals its JSON text into v.
 func mustJSON(t *testing.T, res *mcp.CallToolResult, v any) {
 	t.Helper()

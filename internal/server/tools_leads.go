@@ -37,17 +37,20 @@ type idArg struct {
 	ID uint64 `json:"id" jsonschema:"Record id"`
 }
 
+// updateLeadArgs is a partial update: only id is required, and every editable
+// field is a pointer (or, for tags, a slice) so an omitted field keeps its
+// stored value instead of being reset. See setIf and h.updateLead.
 type updateLeadArgs struct {
-	ID        uint64   `json:"id" jsonschema:"Lead id"`
-	Name      string   `json:"name" jsonschema:"Lead name (required)"`
-	CompanyID uint64   `json:"company_id,omitempty" jsonschema:"Linked Company id (0 = unlink)"`
-	Email     string   `json:"email,omitempty" jsonschema:"Email address"`
-	Phone     string   `json:"phone,omitempty" jsonschema:"Phone number"`
-	Tags      []string `json:"tags,omitempty" jsonschema:"Freeform tags"`
-	Quality   int      `json:"quality,omitempty" jsonschema:"Lead quality score 1-10 (0 = unscored)"`
-	Source    string   `json:"source,omitempty" jsonschema:"Lead source enum"`
-	Status    string   `json:"status,omitempty" jsonschema:"Lead status enum"`
-	Notes     string   `json:"notes,omitempty" jsonschema:"Freeform notes"`
+	ID        uint64   `json:"id" jsonschema:"Lead id (required)"`
+	Name      *string  `json:"name,omitempty" jsonschema:"Lead name; omit to keep, must be non-empty if set"`
+	CompanyID *uint64  `json:"company_id,omitempty" jsonschema:"Linked Company id (0 = unlink); omit to keep"`
+	Email     *string  `json:"email,omitempty" jsonschema:"Email address; omit to keep"`
+	Phone     *string  `json:"phone,omitempty" jsonschema:"Phone number; omit to keep"`
+	Tags      []string `json:"tags,omitempty" jsonschema:"Freeform tags; omit to keep, send [] to clear"`
+	Quality   *int     `json:"quality,omitempty" jsonschema:"Lead quality score 1-10 (0 = unscored); omit to keep"`
+	Source    *string  `json:"source,omitempty" jsonschema:"Lead source enum; omit to keep"`
+	Status    *string  `json:"status,omitempty" jsonschema:"Lead status enum; omit to keep"`
+	Notes     *string  `json:"notes,omitempty" jsonschema:"Freeform notes; omit to keep"`
 }
 
 type convertLeadArgs struct {
@@ -141,14 +144,30 @@ func (h *handlers) getLead(_ context.Context, _ mcp.CallToolRequest, a idArg) (*
 }
 
 func (h *handlers) updateLead(_ context.Context, _ mcp.CallToolRequest, a updateLeadArgs) (*mcp.CallToolResult, error) {
-	lead, err := h.store.UpdateLead(models.Lead{
-		ID: a.ID, Name: a.Name, CompanyID: a.CompanyID, Email: a.Email, Phone: a.Phone,
-		Tags: a.Tags, Quality: a.Quality, Source: models.Source(a.Source), Status: models.LeadStatus(a.Status), Notes: a.Notes,
-	})
+	lead, err := h.store.GetLead(a.ID)
 	if err != nil {
 		return toolErr(err)
 	}
-	return jsonResult(lead)
+	setIf(&lead.Name, a.Name)
+	setIf(&lead.CompanyID, a.CompanyID)
+	setIf(&lead.Email, a.Email)
+	setIf(&lead.Phone, a.Phone)
+	setIf(&lead.Quality, a.Quality)
+	setIf(&lead.Notes, a.Notes)
+	if a.Tags != nil {
+		lead.Tags = a.Tags
+	}
+	if a.Source != nil {
+		lead.Source = models.Source(*a.Source)
+	}
+	if a.Status != nil {
+		lead.Status = models.LeadStatus(*a.Status)
+	}
+	updated, err := h.store.UpdateLead(lead)
+	if err != nil {
+		return toolErr(err)
+	}
+	return jsonResult(updated)
 }
 
 func (h *handlers) convertLead(_ context.Context, _ mcp.CallToolRequest, a convertLeadArgs) (*mcp.CallToolResult, error) {

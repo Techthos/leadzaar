@@ -66,6 +66,18 @@ func toolErr(err error) (*mcp.CallToolResult, error) {
 	return mcp.NewToolResultError(err.Error()), nil
 }
 
+// setIf overlays a patch pointer onto dst when the caller actually supplied it
+// (patch != nil), leaving dst untouched otherwise. It is the primitive behind
+// the update_* tools' partial-update (PATCH) semantics: a field the caller omits
+// keeps its stored value instead of being reset to the zero value. The DB layer's
+// UpdateX does a full-record replace, so the handler must load the existing
+// record and setIf every editable field before saving.
+func setIf[T any](dst *T, patch *T) {
+	if patch != nil {
+		*dst = *patch
+	}
+}
+
 // parseIDFromURI extracts the trailing numeric ID from a resource URI of the
 // form prefix + "<id>".
 func parseIDFromURI(uri, prefix string) (uint64, error) {

@@ -21,13 +21,16 @@ type listOffersArgs struct {
 	LeadID uint64 `json:"lead_id,omitempty" jsonschema:"Filter by owning lead id (0 = all)"`
 }
 
+// updateOfferArgs is a partial update: id and lead_id are required (lead_id
+// confirms/sets the owning lead, per the spec); the remaining editable fields
+// are pointers so an omitted one keeps its stored value (see setIf).
 type updateOfferArgs struct {
-	ID          uint64 `json:"id" jsonschema:"Offer id"`
-	LeadID      uint64 `json:"lead_id" jsonschema:"Owning lead id (must exist)"`
-	Title       string `json:"title" jsonschema:"Offer title (required)"`
-	Description string `json:"description,omitempty" jsonschema:"Short description of the offer"`
-	Subject     string `json:"subject,omitempty" jsonschema:"Email subject line"`
-	Body        string `json:"body,omitempty" jsonschema:"Raw email body content"`
+	ID          uint64  `json:"id" jsonschema:"Offer id (required)"`
+	LeadID      uint64  `json:"lead_id" jsonschema:"Owning lead id (required, must exist)"`
+	Title       *string `json:"title,omitempty" jsonschema:"Offer title; omit to keep, must be non-empty if set"`
+	Description *string `json:"description,omitempty" jsonschema:"Short description of the offer; omit to keep"`
+	Subject     *string `json:"subject,omitempty" jsonschema:"Email subject line; omit to keep"`
+	Body        *string `json:"body,omitempty" jsonschema:"Raw email body content; omit to keep"`
 }
 
 func (h *handlers) registerOfferTools(s *server.MCPServer) {
@@ -89,13 +92,20 @@ func (h *handlers) getOffer(_ context.Context, _ mcp.CallToolRequest, a idArg) (
 }
 
 func (h *handlers) updateOffer(_ context.Context, _ mcp.CallToolRequest, a updateOfferArgs) (*mcp.CallToolResult, error) {
-	o, err := h.store.UpdateOffer(models.Offer{
-		ID: a.ID, LeadID: a.LeadID, Title: a.Title, Description: a.Description, Subject: a.Subject, Body: a.Body,
-	})
+	o, err := h.store.GetOffer(a.ID)
 	if err != nil {
 		return toolErr(err)
 	}
-	return jsonResult(o)
+	o.LeadID = a.LeadID
+	setIf(&o.Title, a.Title)
+	setIf(&o.Description, a.Description)
+	setIf(&o.Subject, a.Subject)
+	setIf(&o.Body, a.Body)
+	updated, err := h.store.UpdateOffer(o)
+	if err != nil {
+		return toolErr(err)
+	}
+	return jsonResult(updated)
 }
 
 func (h *handlers) deleteOffer(_ context.Context, _ mcp.CallToolRequest, a idArg) (*mcp.CallToolResult, error) {
