@@ -9,9 +9,9 @@ import (
 
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/techthos/microapp-crm/internal/db"
-	"github.com/techthos/microapp-crm/internal/models"
-	"github.com/techthos/microapp-crm/internal/server"
+	"github.com/techthos/leadzaar/internal/db"
+	"github.com/techthos/leadzaar/internal/models"
+	"github.com/techthos/leadzaar/internal/server"
 )
 
 // itoa formats a record id for use in a resource URI.

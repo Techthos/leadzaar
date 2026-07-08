@@ -1,4 +1,4 @@
-// Package models holds the plain domain structs for microapp-crm: Lead, Contact,
+// Package models holds the plain domain structs for Leadzaar: Lead, Contact,
 // and Deal, plus the small enums that constrain their categorical fields.
 //
 // These types are storage-agnostic — they carry no bbolt (or any persistence)

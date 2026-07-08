@@ -1,4 +1,4 @@
-// Package tui is the terminal UI for microapp-crm, built on rivo/tview. It owns
+// Package tui is the terminal UI for Leadzaar, built on rivo/tview. It owns
 // a single tview.Application and pulls all data through the db.Store — no bbolt
 // access or business logic lives here. See docs/SPECIFICATIONS.md (TUI Surface)
 // and .claude/rules/tui-rules.md.
@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/techthos/microapp-crm/internal/models"
+	"github.com/techthos/leadzaar/internal/models"
 )
 
 // col describes a table column: its header and whether it holds numbers (which

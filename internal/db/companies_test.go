@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/techthos/microapp-crm/internal/db"
-	"github.com/techthos/microapp-crm/internal/models"
+	"github.com/techthos/leadzaar/internal/db"
+	"github.com/techthos/leadzaar/internal/models"
 	bolt "go.etcd.io/bbolt"
 )
 

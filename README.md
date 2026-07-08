@@ -1,4 +1,4 @@
-# microapp-crm
+# Leadzaar
 
 A local-first, single-user sales CRM in one self-contained Go binary. Capture **Leads**, convert the
 good ones into **Contacts**, and track opportunities as **Deals** through a pipeline — all stored in

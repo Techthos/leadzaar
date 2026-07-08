@@ -3,7 +3,7 @@ package tui
 import (
 	"fmt"
 
-	"github.com/techthos/microapp-crm/internal/models"
+	"github.com/techthos/leadzaar/internal/models"
 )
 
 // newCompaniesScreen builds the companies master-detail screen. Companies are

@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/techthos/microapp-crm/internal/models"
+	"github.com/techthos/leadzaar/internal/models"
 )
 
 // TestEveryToolHappyPath exercises each remaining CRUD tool once so the full

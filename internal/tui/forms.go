@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	"github.com/rivo/tview"
-	"github.com/techthos/microapp-crm/internal/models"
+	"github.com/techthos/leadzaar/internal/models"
 )
 
 // formField is one labeled input, its inline error line, and its validator.

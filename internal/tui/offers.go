@@ -2,7 +2,7 @@ package tui
 
 import (
 	"github.com/gdamore/tcell/v2"
-	"github.com/techthos/microapp-crm/internal/models"
+	"github.com/techthos/leadzaar/internal/models"
 )
 
 // newOffersScreen builds the offers master-detail screen. Offers are email-style

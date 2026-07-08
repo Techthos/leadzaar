@@ -1,4 +1,4 @@
-module github.com/techthos/microapp-crm
+module github.com/techthos/leadzaar
 
 go 1.26.4
 

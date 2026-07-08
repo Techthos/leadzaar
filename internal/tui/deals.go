@@ -2,7 +2,7 @@ package tui
 
 import (
 	"github.com/gdamore/tcell/v2"
-	"github.com/techthos/microapp-crm/internal/models"
+	"github.com/techthos/leadzaar/internal/models"
 )
 
 // newDealsScreen builds the deals master-detail screen (UC-13,14,16,17). Beyond

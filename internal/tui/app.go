@@ -6,8 +6,8 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
-	"github.com/techthos/microapp-crm/internal/db"
-	"github.com/techthos/microapp-crm/internal/models"
+	"github.com/techthos/leadzaar/internal/db"
+	"github.com/techthos/leadzaar/internal/models"
 )
 
 // defaultPollEvery is how often the TUI checks whether another process (e.g. the
@@ -154,7 +154,7 @@ func newTUI(store *db.Store) *tui {
 	t.hintZone = tview.NewTextView().SetDynamicColors(true).SetTextAlign(tview.AlignRight)
 
 	t.sidebar = tview.NewList().ShowSecondaryText(false)
-	t.sidebar.SetHighlightFullLine(true).SetBorder(true).SetTitle(" microapp-crm ")
+	t.sidebar.SetHighlightFullLine(true).SetBorder(true).SetTitle(" Leadzaar ")
 	t.sidebar.SetSelectedFunc(func(i int, _, _ string, _ rune) { t.switchTo(i) })
 
 	t.companyNames = map[uint64]string{}

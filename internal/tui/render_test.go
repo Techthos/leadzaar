@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/techthos/microapp-crm/internal/models"
+	"github.com/techthos/leadzaar/internal/models"
 )
 
 // testCompanyName is a fixed CompanyID→name resolver for render tests.

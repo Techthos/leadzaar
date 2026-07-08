@@ -10,7 +10,7 @@ test:
 	go test ./... -race -cover
 
 build:
-	go build -o microapp-crm .
+	go build -o leadzaar .
 
 tidy:
 	go mod tidy

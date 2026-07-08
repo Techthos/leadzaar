@@ -1,10 +1,10 @@
-// Command microapp-crm is a local-first, single-user sales CRM.
+// Command leadzaar is a local-first, single-user sales CRM.
 //
 // It runs as one self-contained binary backed by a single embedded bbolt file,
 // and exposes the same data through two surfaces selected at launch:
 //
-//	microapp-crm -mode tui   # interactive terminal UI (default)
-//	microapp-crm -mode mcp   # MCP stdio server for an AI assistant
+//	leadzaar -mode tui   # interactive terminal UI (default)
+//	leadzaar -mode mcp   # MCP stdio server for an AI assistant
 //
 // The two modes may run concurrently as separate processes against the same
 // file: the store opens bbolt per operation (connection-per-operation) so no
@@ -18,9 +18,9 @@ import (
 	"os"
 
 	mcpserver "github.com/mark3labs/mcp-go/server"
-	"github.com/techthos/microapp-crm/internal/db"
-	"github.com/techthos/microapp-crm/internal/server"
-	"github.com/techthos/microapp-crm/internal/tui"
+	"github.com/techthos/leadzaar/internal/db"
+	"github.com/techthos/leadzaar/internal/server"
+	"github.com/techthos/leadzaar/internal/tui"
 )
 
 // version is stamped at build time via -ldflags "-X main.version=...".
@@ -28,7 +28,7 @@ var version = "dev"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "microapp-crm:", err)
+		fmt.Fprintln(os.Stderr, "leadzaar:", err)
 		os.Exit(1)
 	}
 }
@@ -36,16 +36,16 @@ func main() {
 // run parses flags and dispatches to the selected surface. It returns an error
 // instead of exiting so it stays testable.
 func run(args []string) error {
-	fs := flag.NewFlagSet("microapp-crm", flag.ContinueOnError)
+	fs := flag.NewFlagSet("leadzaar", flag.ContinueOnError)
 	mode := fs.String("mode", "tui", "surface to start: tui | mcp")
-	dbPath := fs.String("db", "microapp-crm.db", "path to the bbolt database file")
+	dbPath := fs.String("db", "leadzaar.db", "path to the bbolt database file")
 	showVersion := fs.Bool("version", false, "print version and exit")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
 	if *showVersion {
-		fmt.Println("microapp-crm", version)
+		fmt.Println("leadzaar", version)
 		return nil
 	}
 

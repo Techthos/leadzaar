@@ -7,7 +7,7 @@ import (
 // helpText is the full keybinding reference shown by the `?` overlay. The status
 // bar only surfaces the few keys relevant to the focused screen; this lists them
 // all (see tui-rules.md "Keybindings").
-const helpText = `[::b]microapp-crm — keys[::-]
+const helpText = `[::b]Leadzaar — keys[::-]
 
 [::b]Navigation[::-]
   1–6         jump to a section (Dashboard, Leads, Contacts, Deals, Companies, Offers)

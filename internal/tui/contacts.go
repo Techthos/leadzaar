@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/techthos/microapp-crm/internal/models"
+	"github.com/techthos/leadzaar/internal/models"
 )
 
 // newContactsScreen builds the contacts master-detail screen (UC-7,8,10,11). The

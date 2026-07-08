@@ -1,11 +1,11 @@
-# microapp-crm — Specification
+# Leadzaar — Specification
 
 > This document is the **single source of truth** for what this app is. Code follows the spec;
 > any scope change updates the spec **first** (see `.claude/rules/specification-rules.md`).
 
 ## Overview
 
-**microapp-crm** is a local-first, single-user sales CRM that runs as one self-contained Go binary.
+**Leadzaar** is a local-first, single-user sales CRM that runs as one self-contained Go binary.
 It helps a solo operator (freelancer, consultant, independent salesperson) work a simple funnel:
 capture **Leads**, qualify and **convert** the good ones into **Contacts**, and track the money on
 the table as **Deals** moving through a pipeline. There is no team, no web app, and no cloud — all

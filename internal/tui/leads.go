@@ -4,8 +4,8 @@ import (
 	"strings"
 
 	"github.com/gdamore/tcell/v2"
-	"github.com/techthos/microapp-crm/internal/db"
-	"github.com/techthos/microapp-crm/internal/models"
+	"github.com/techthos/leadzaar/internal/db"
+	"github.com/techthos/leadzaar/internal/models"
 )
 
 // newLeadsScreen builds the leads master-detail screen (UC-1,2,4,5,6). Beyond

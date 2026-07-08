@@ -1,4 +1,4 @@
-// Package server implements the microapp-crm MCP server using mark3labs/mcp-go.
+// Package server implements the Leadzaar MCP server using mark3labs/mcp-go.
 // It is transport-agnostic: construction and registration live here, transport
 // selection lives in main. Handlers consume the db.Store and never touch bbolt
 // directly. See docs/SPECIFICATIONS.md (MCP Surface) and
@@ -12,7 +12,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
-	"github.com/techthos/microapp-crm/internal/db"
+	"github.com/techthos/leadzaar/internal/db"
 )
 
 // handlers bundles the dependencies shared by every tool/resource/prompt handler.
@@ -25,7 +25,7 @@ type handlers struct {
 // surface.
 func New(store *db.Store, version string) *server.MCPServer {
 	s := server.NewMCPServer(
-		"microapp-crm", version,
+		"leadzaar", version,
 		server.WithToolCapabilities(true),
 		server.WithResourceCapabilities(false, false),
 		server.WithPromptCapabilities(false),

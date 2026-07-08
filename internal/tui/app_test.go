@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	"github.com/gdamore/tcell/v2"
-	"github.com/techthos/microapp-crm/internal/db"
-	"github.com/techthos/microapp-crm/internal/models"
+	"github.com/techthos/leadzaar/internal/db"
+	"github.com/techthos/leadzaar/internal/models"
 )
 
 // seededStore returns a store with one company, one lead, one contact (linked to
@@ -211,8 +211,8 @@ func TestTUIHelpOverlay(t *testing.T) {
 
 	waitFor(t, ti, sim, "LEADS")
 	sim.InjectKey(tcell.KeyRune, '?', tcell.ModNone)
-	waitFor(t, ti, sim, "microapp-crm — keys")
+	waitFor(t, ti, sim, "Leadzaar — keys")
 
 	sim.InjectKey(tcell.KeyEscape, 0, tcell.ModNone)
-	waitForGone(t, ti, sim, "microapp-crm — keys")
+	waitForGone(t, ti, sim, "Leadzaar — keys")
 }

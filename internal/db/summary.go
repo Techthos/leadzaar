@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/techthos/microapp-crm/internal/models"
+	"github.com/techthos/leadzaar/internal/models"
 	bolt "go.etcd.io/bbolt"
 )
 

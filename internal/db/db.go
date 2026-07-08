@@ -1,4 +1,4 @@
-// Package db is the persistence layer for microapp-crm. It is the only package
+// Package db is the persistence layer for Leadzaar. It is the only package
 // that imports bbolt; every other layer goes through the Store, receiving plain
 // models, never *bolt.Tx or transaction-scoped byte slices. See
 // docs/SPECIFICATIONS.md (Persistence Design) and .claude/rules/db-rules.md.

@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/techthos/microapp-crm/internal/db"
-	"github.com/techthos/microapp-crm/internal/models"
+	"github.com/techthos/leadzaar/internal/db"
+	"github.com/techthos/leadzaar/internal/models"
 )
 
 func TestConvert(t *testing.T) {

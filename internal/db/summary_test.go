@@ -3,7 +3,7 @@ package db_test
 import (
 	"testing"
 
-	"github.com/techthos/microapp-crm/internal/models"
+	"github.com/techthos/leadzaar/internal/models"
 )
 
 func TestPipelineSummaryEmpty(t *testing.T) {

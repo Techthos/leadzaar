@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-**microapp-crm** is a local-first, single-user sales CRM that ships as **one self-contained Go
+**Leadzaar** is a local-first, single-user sales CRM that ships as **one self-contained Go
 binary**. It works a `Lead → Contact → Deal` funnel, persisting everything to a single embedded
 [bbolt](https://github.com/etcd-io/bbolt) file. The same data is exposed through two surfaces
 selected at launch — a **tview TUI** and an **MCP stdio server**. They may run **concurrently as
