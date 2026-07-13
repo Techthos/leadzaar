@@ -50,14 +50,22 @@ func jsonResult(v any) (*mcp.CallToolResult, error) {
 	return mcp.NewToolResultJSON(v)
 }
 
-// listResult wraps a slice under a named key. The MCP spec requires a result's
-// structuredContent to be a JSON object, so list tools must not return a bare
-// array. A nil slice is normalized to an empty array for a stable shape.
-func listResult[T any](key string, items []T) (*mcp.CallToolResult, error) {
+// pageResult wraps a page of list items under a named key alongside the
+// pagination metadata every list_* tool returns. items is normalized to an empty
+// array for a stable shape (the MCP spec requires structuredContent to be a JSON
+// object, so a list tool never returns a bare array).
+func pageResult[T any](key string, items []T, page, pageSize, total, totalPages int, hasMore bool) (*mcp.CallToolResult, error) {
 	if items == nil {
 		items = []T{}
 	}
-	return mcp.NewToolResultJSON(map[string]any{key: items})
+	return mcp.NewToolResultJSON(map[string]any{
+		key:           items,
+		"page":        page,
+		"page_size":   pageSize,
+		"total":       total,
+		"total_pages": totalPages,
+		"has_more":    hasMore,
+	})
 }
 
 // toolErr converts a store/business error into a user-facing tool-error result

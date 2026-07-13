@@ -3,6 +3,7 @@ package db_test
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/techthos/leadzaar/internal/db"
 	"github.com/techthos/leadzaar/internal/models"
@@ -130,6 +131,75 @@ func TestListDeals(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestQueryDeals(t *testing.T) {
+	t.Parallel()
+	clk := newClock()
+	store := openTestStore(t, clk)
+	owner := mustContact(t, store, "Owner")
+
+	d1, _ := store.CreateDeal(models.Deal{Title: "Alpha deal", ContactID: owner.ID, Stage: models.StageQualification})
+	clk.advance(time.Hour)
+	d2, _ := store.CreateDeal(models.Deal{Title: "Beta deal", ContactID: owner.ID, Stage: models.StageProposal, Value: 100, Currency: "EUR"})
+	clk.advance(time.Hour)
+	d3, _ := store.CreateDeal(models.Deal{Title: "Gamma deal", ContactID: owner.ID, Stage: models.StageQualification})
+
+	first := func(p db.DealPage) uint64 {
+		if len(p.Deals) == 0 {
+			return 0
+		}
+		return p.Deals[0].ID
+	}
+
+	t.Run("default last-updated-first with metadata", func(t *testing.T) {
+		got, err := store.QueryDeals(db.DealQuery{})
+		if err != nil {
+			t.Fatalf("QueryDeals: %v", err)
+		}
+		if got.Total != 3 || first(got) != d3.ID {
+			t.Errorf("default first = %d, want %d (total %d)", first(got), d3.ID, got.Total)
+		}
+	})
+
+	t.Run("updated jumps to front", func(t *testing.T) {
+		clk.advance(time.Hour)
+		if _, err := store.UpdateDeal(d1); err != nil {
+			t.Fatalf("UpdateDeal: %v", err)
+		}
+		got, _ := store.QueryDeals(db.DealQuery{})
+		if first(got) != d1.ID {
+			t.Errorf("updated-first = %d, want %d", first(got), d1.ID)
+		}
+	})
+
+	t.Run("stage, contact, and search filters", func(t *testing.T) {
+		byStage, _ := store.QueryDeals(db.DealQuery{Stage: models.StageQualification})
+		if byStage.Total != 2 {
+			t.Errorf("stage total = %d, want 2", byStage.Total)
+		}
+		byContact, _ := store.QueryDeals(db.DealQuery{ContactID: owner.ID})
+		if byContact.Total != 3 {
+			t.Errorf("contact total = %d, want 3", byContact.Total)
+		}
+		bySearch, _ := store.QueryDeals(db.DealQuery{Search: "beta"})
+		if bySearch.Total != 1 || first(bySearch) != d2.ID {
+			t.Errorf("search = %+v, want [%d]", bySearch.Deals, d2.ID)
+		}
+	})
+
+	t.Run("pagination clamp and invalid inputs rejected", func(t *testing.T) {
+		clamp, _ := store.QueryDeals(db.DealQuery{PageSize: 1000})
+		if clamp.PageSize != 50 {
+			t.Errorf("page_size = %d, want clamped to 50", clamp.PageSize)
+		}
+		if _, err := store.QueryDeals(db.DealQuery{Stage: models.DealStage("bogus")}); err == nil {
+			t.Error("expected error for bad stage")
+		}
+		if _, err := store.QueryDeals(db.DealQuery{SortBy: db.DealSort("bogus")}); err == nil {
+			t.Error("expected error for bad sort")
+		}
+	})
 }
 
 func TestUpdateDeal(t *testing.T) {

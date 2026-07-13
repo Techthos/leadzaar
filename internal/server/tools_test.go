@@ -2,6 +2,7 @@ package server_test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -280,6 +281,62 @@ func TestListLeadsPaginationAndSearch(t *testing.T) {
 			t.Error("expected tool error for bad sort_by")
 		}
 	})
+}
+
+// TestListToolsMinimalAndUpdatedFirst verifies that list_* omits long/freeform
+// fields (lead notes, offer description/body) to keep responses small, that the
+// matching get_* still returns the complete record, and that lists default to
+// most-recently-updated first.
+func TestListToolsMinimalAndUpdatedFirst(t *testing.T) {
+	t.Parallel()
+	c, ctx := setup(t)
+
+	// Two leads with notes; update the first so it becomes most-recently-updated.
+	var leadA, leadB models.Lead
+	mustJSON(t, callTool(t, c, ctx, "create_lead", map[string]any{"name": "Alpha", "notes": "secret-alpha"}), &leadA)
+	mustJSON(t, callTool(t, c, ctx, "create_lead", map[string]any{"name": "Beta", "notes": "secret-beta"}), &leadB)
+	if r := callTool(t, c, ctx, "update_lead", map[string]any{"id": leadA.ID, "name": "Alpha2"}); r.IsError {
+		t.Fatalf("update_lead: %s", resultText(t, r))
+	}
+
+	listRes := callTool(t, c, ctx, "list_leads", map[string]any{})
+	if txt := resultText(t, listRes); strings.Contains(txt, "notes") || strings.Contains(txt, "secret-") {
+		t.Errorf("list_leads leaked notes:\n%s", txt)
+	}
+	var lp leadPageResult
+	mustJSON(t, listRes, &lp)
+	if len(lp.Leads) != 2 {
+		t.Fatalf("list_leads returned %d leads, want 2", len(lp.Leads))
+	}
+	if lp.Leads[0].ID != leadA.ID {
+		t.Errorf("most-recently-updated lead not first: got id %d, want %d", lp.Leads[0].ID, leadA.ID)
+	}
+	if lp.Leads[0].Notes != "" {
+		t.Errorf("list item carried notes: %q", lp.Leads[0].Notes)
+	}
+
+	// get_lead returns the full record including notes.
+	var full models.Lead
+	mustJSON(t, callTool(t, c, ctx, "get_lead", map[string]any{"id": leadB.ID}), &full)
+	if full.Notes != "secret-beta" {
+		t.Errorf("get_lead notes = %q, want the stored note", full.Notes)
+	}
+
+	// Offers: description/body omitted in the list, present via get_offer.
+	var offer models.Offer
+	mustJSON(t, callTool(t, c, ctx, "create_offer", map[string]any{
+		"lead_id": leadB.ID, "title": "Prop", "subject": "Subj", "description": "desc-text", "body": "long-body-text",
+	}), &offer)
+
+	offListRes := callTool(t, c, ctx, "list_offers", map[string]any{})
+	if txt := resultText(t, offListRes); strings.Contains(txt, "long-body-text") || strings.Contains(txt, "desc-text") {
+		t.Errorf("list_offers leaked description/body:\n%s", txt)
+	}
+	var fullOffer models.Offer
+	mustJSON(t, callTool(t, c, ctx, "get_offer", map[string]any{"id": offer.ID}), &fullOffer)
+	if fullOffer.Body != "long-body-text" || fullOffer.Description != "desc-text" {
+		t.Errorf("get_offer missing full fields: %+v", fullOffer)
+	}
 }
 
 // TestUpdateToolsPartialPreservesOtherFields is the regression guard for the

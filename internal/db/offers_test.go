@@ -3,6 +3,7 @@ package db_test
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/techthos/leadzaar/internal/db"
 	"github.com/techthos/leadzaar/internal/models"
@@ -119,6 +120,72 @@ func TestListOffers(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestQueryOffers(t *testing.T) {
+	t.Parallel()
+	clk := newClock()
+	store := openTestStore(t, clk)
+	lead := mustLead(t, store, "Prospect")
+
+	o1, _ := store.CreateOffer(models.Offer{LeadID: lead.ID, Title: "Alpha", Subject: "Kickoff"})
+	clk.advance(time.Hour)
+	o2, _ := store.CreateOffer(models.Offer{LeadID: lead.ID, Title: "Beta", Subject: "Renewal", Body: "long body"})
+	clk.advance(time.Hour)
+	o3, _ := store.CreateOffer(models.Offer{LeadID: lead.ID, Title: "Gamma"})
+
+	first := func(p db.OfferPage) uint64 {
+		if len(p.Offers) == 0 {
+			return 0
+		}
+		return p.Offers[0].ID
+	}
+
+	t.Run("default last-updated-first with metadata", func(t *testing.T) {
+		got, err := store.QueryOffers(db.OfferQuery{})
+		if err != nil {
+			t.Fatalf("QueryOffers: %v", err)
+		}
+		if got.Total != 3 || first(got) != o3.ID {
+			t.Errorf("default first = %d, want %d (total %d)", first(got), o3.ID, got.Total)
+		}
+	})
+
+	t.Run("updated jumps to front", func(t *testing.T) {
+		clk.advance(time.Hour)
+		if _, err := store.UpdateOffer(o1); err != nil {
+			t.Fatalf("UpdateOffer: %v", err)
+		}
+		got, _ := store.QueryOffers(db.OfferQuery{})
+		if first(got) != o1.ID {
+			t.Errorf("updated-first = %d, want %d", first(got), o1.ID)
+		}
+	})
+
+	t.Run("lead filter and search over title/subject", func(t *testing.T) {
+		byLead, _ := store.QueryOffers(db.OfferQuery{LeadID: lead.ID})
+		if byLead.Total != 3 {
+			t.Errorf("lead total = %d, want 3", byLead.Total)
+		}
+		byTitle, _ := store.QueryOffers(db.OfferQuery{Search: "beta"})
+		if byTitle.Total != 1 || first(byTitle) != o2.ID {
+			t.Errorf("title search = %+v, want [%d]", byTitle.Offers, o2.ID)
+		}
+		bySubject, _ := store.QueryOffers(db.OfferQuery{Search: "renewal"})
+		if bySubject.Total != 1 || first(bySubject) != o2.ID {
+			t.Errorf("subject search = %+v, want [%d]", bySubject.Offers, o2.ID)
+		}
+	})
+
+	t.Run("pagination clamp and invalid sort rejected", func(t *testing.T) {
+		clamp, _ := store.QueryOffers(db.OfferQuery{PageSize: 1000})
+		if clamp.PageSize != 50 {
+			t.Errorf("page_size = %d, want clamped to 50", clamp.PageSize)
+		}
+		if _, err := store.QueryOffers(db.OfferQuery{SortBy: db.OfferSort("bogus")}); err == nil {
+			t.Error("expected error for bad sort")
+		}
+	})
 }
 
 func TestUpdateOffer(t *testing.T) {

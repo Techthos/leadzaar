@@ -51,7 +51,7 @@ const (
 // optional case-insensitive substring Search over name/company/email/tags, a
 // sort field + direction, and 1-based pagination. Zero values mean "no
 // filter"; Page < 1 becomes 1, PageSize is clamped to [1, maxLeadPageSize]
-// (0 takes the default), and SortBy "" defaults to creation order.
+// (0 takes the default), and SortBy "" defaults to last-updated order.
 type LeadQuery struct {
 	Status   models.LeadStatus
 	Search   string
@@ -156,7 +156,7 @@ func (s *Store) ListLeads(status models.LeadStatus) ([]models.Lead, error) {
 // QueryLeads is the flexible, paginated lead listing behind the list_leads MCP
 // tool (UC-2). It filters by status and/or a case-insensitive substring Search
 // over name, linked company name, email, and tags; orders the full matching set
-// by q.SortBy (q.Desc to reverse, default newest-first); then returns a single
+// by q.SortBy (default last-updated, q.Asc to reverse); then returns a single
 // page sized per q.PageSize (clamped to [1, maxLeadPageSize]) along with the
 // totals needed to page through the rest. Like the rest of v1, this is a full
 // primary-bucket scan with in-memory filter/sort — no status or quality index.
@@ -181,7 +181,7 @@ func (s *Store) QueryLeads(q LeadQuery) (LeadPage, error) {
 	}
 	sortBy := q.SortBy
 	if sortBy == "" {
-		sortBy = LeadSortCreated
+		sortBy = LeadSortUpdated
 	}
 	search := strings.ToLower(strings.TrimSpace(q.Search))
 

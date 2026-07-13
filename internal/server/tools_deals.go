@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -22,6 +23,11 @@ type createDealArgs struct {
 type listDealsArgs struct {
 	Stage     string `json:"stage,omitempty" jsonschema:"Filter by stage (blank = all)"`
 	ContactID uint64 `json:"contact_id,omitempty" jsonschema:"Filter by owning contact id (0 = all)"`
+	Query     string `json:"query,omitempty" jsonschema:"Substring match on title/company (blank = all)"`
+	SortBy    string `json:"sort_by,omitempty" jsonschema:"Order by: updated (default) or created"`
+	Order     string `json:"order,omitempty" jsonschema:"Sort direction: desc (default, most-recently-updated first) or asc"`
+	Page      int    `json:"page,omitempty" jsonschema:"1-based page number (default 1)"`
+	PageSize  int    `json:"page_size,omitempty" jsonschema:"Results per page, 1-50 (default 50; higher values are clamped to 50)"`
 }
 
 // updateDealArgs is a partial update: only id is required; omitted editable
@@ -46,7 +52,7 @@ func (h *handlers) registerDealTools(s *server.MCPServer) {
 
 	s.AddTool(mcp.NewTool(
 		"list_deals",
-		mcp.WithDescription("List deals, optionally filtered by stage and/or contact."),
+		mcp.WithDescription("List deals (minimal fields; use get_deal for the full record), optionally filtered by stage, contact, and/or substring query, with ordering (updated default/created) and pagination (max page size 50). Returns the page plus total/total_pages/has_more."),
 		mcp.WithInputSchema[listDealsArgs](),
 	), mcp.NewTypedToolHandler(h.listDeals))
 
@@ -81,11 +87,20 @@ func (h *handlers) createDeal(_ context.Context, _ mcp.CallToolRequest, a create
 }
 
 func (h *handlers) listDeals(_ context.Context, _ mcp.CallToolRequest, a listDealsArgs) (*mcp.CallToolResult, error) {
-	deals, err := h.store.ListDeals(db.DealFilter{ContactID: a.ContactID, Stage: models.DealStage(a.Stage)})
+	page, err := h.store.QueryDeals(db.DealQuery{
+		ContactID: a.ContactID,
+		Stage:     models.DealStage(a.Stage),
+		Search:    a.Query,
+		SortBy:    db.DealSort(a.SortBy),
+		Asc:       strings.EqualFold(strings.TrimSpace(a.Order), "asc"),
+		Page:      a.Page,
+		PageSize:  a.PageSize,
+	})
 	if err != nil {
 		return toolErr(err)
 	}
-	return listResult("deals", deals)
+	return pageResult("deals", toDealListItems(page.Deals),
+		page.Page, page.PageSize, page.Total, page.TotalPages, page.HasMore)
 }
 
 func (h *handlers) getDeal(_ context.Context, _ mcp.CallToolRequest, a idArg) (*mcp.CallToolResult, error) {

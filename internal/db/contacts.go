@@ -3,12 +3,149 @@ package db
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/techthos/leadzaar/internal/models"
 	bolt "go.etcd.io/bbolt"
 )
+
+// errInvalidContactSort is returned for an unrecognized QueryContacts sort field.
+var errInvalidContactSort = errors.New("invalid contact sort field (want created or updated)")
+
+// ContactSort selects the field QueryContacts orders by. An empty value defaults
+// to ContactSortUpdated (last-updated first).
+type ContactSort string
+
+const (
+	ContactSortCreated ContactSort = "created" // by ID (creation order)
+	ContactSortUpdated ContactSort = "updated" // by UpdatedAt, ties broken by ID
+)
+
+// Valid reports whether o is a recognized sort field.
+func (o ContactSort) Valid() bool {
+	switch o {
+	case ContactSortCreated, ContactSortUpdated:
+		return true
+	default:
+		return false
+	}
+}
+
+// ContactQuery parameterizes QueryContacts (UC-8): an optional exact Email lookup
+// (via idx_contact_by_email), an optional Tag membership filter, an optional
+// case-insensitive substring Search over name/company/email/tags, a sort field +
+// direction, and 1-based pagination. Zero values mean "no filter"; SortBy ""
+// defaults to last-updated order.
+type ContactQuery struct {
+	Email    string
+	Tag      string
+	Search   string
+	SortBy   ContactSort
+	Asc      bool // false (zero value) = descending: newest/most-recently-updated first
+	Page     int
+	PageSize int
+}
+
+// ContactPage is one page of QueryContacts results plus pagination metadata
+// describing the full filtered set (mirrors LeadPage).
+type ContactPage struct {
+	Contacts   []models.Contact `json:"contacts"`
+	Page       int              `json:"page"`
+	PageSize   int              `json:"pageSize"`
+	Total      int              `json:"total"`
+	TotalPages int              `json:"totalPages"`
+	HasMore    bool             `json:"hasMore"`
+}
+
+// QueryContacts is the flexible, paginated contact listing behind list_contacts
+// (UC-8). It seeds from the email index when Email is set (else a full scan),
+// applies the Tag and Search filters in memory, orders by q.SortBy (default
+// last-updated), and slices out one page. Full-scan + in-memory sort, like the
+// rest of v1 — no per-field index.
+func (s *Store) QueryContacts(q ContactQuery) (ContactPage, error) {
+	if q.SortBy != "" && !q.SortBy.Valid() {
+		return ContactPage{}, fmt.Errorf("query contacts: %w", errInvalidContactSort)
+	}
+	page, size := normalizePage(q.Page, q.PageSize)
+	byUpdated := q.SortBy != ContactSortCreated
+	search := strings.ToLower(strings.TrimSpace(q.Search))
+	tag := strings.TrimSpace(q.Tag)
+
+	var matched []models.Contact
+	err := s.view(func(tx *bolt.Tx) error {
+		names := companyNames(tx)
+		consider := func(c models.Contact) {
+			if tag != "" && !contactHasTag(c, tag) {
+				return
+			}
+			if search != "" && !contactMatches(c, names[c.CompanyID], search) {
+				return
+			}
+			matched = append(matched, c)
+		}
+
+		if q.Email != "" {
+			prefix := contactEmailIndexPrefix(q.Email)
+			if len(prefix) == 1 { // just the 0x00 separator → empty email, nothing to match
+				return nil
+			}
+			contacts := tx.Bucket(bucketContacts)
+			cur := tx.Bucket(bucketContactByEmail).Cursor()
+			for k, _ := cur.Seek(prefix); k != nil && bytes.HasPrefix(k, prefix); k, _ = cur.Next() {
+				v := contacts.Get(itob(btoi(k[len(k)-8:])))
+				if v == nil {
+					continue // index/primary skew; tolerate
+				}
+				var c models.Contact
+				if err := json.Unmarshal(v, &c); err != nil {
+					return err
+				}
+				consider(c)
+			}
+			return nil
+		}
+
+		return tx.Bucket(bucketContacts).ForEach(func(_, v []byte) error {
+			var c models.Contact
+			if err := json.Unmarshal(v, &c); err != nil {
+				return err
+			}
+			consider(c)
+			return nil
+		})
+	})
+	if err != nil {
+		return ContactPage{}, fmt.Errorf("query contacts: %w", err)
+	}
+
+	sortByCreatedUpdated(matched, byUpdated, q.Asc,
+		func(c models.Contact) uint64 { return c.ID },
+		func(c models.Contact) time.Time { return c.UpdatedAt })
+
+	items, total, totalPages, hasMore := paginate(matched, page, size)
+	return ContactPage{
+		Contacts:   items,
+		Page:       page,
+		PageSize:   size,
+		Total:      total,
+		TotalPages: totalPages,
+		HasMore:    hasMore,
+	}, nil
+}
+
+// contactHasTag reports whether contact c carries a tag equal (case-insensitive)
+// to tag.
+func contactHasTag(c models.Contact, tag string) bool {
+	for _, t := range c.Tags {
+		if strings.EqualFold(t, tag) {
+			return true
+		}
+	}
+	return false
+}
 
 // CreateContact inserts a new contact (UC-7). Name is required. A fresh
 // big-endian surrogate ID is assigned, timestamps are set, and an

@@ -27,7 +27,7 @@ type createLeadArgs struct {
 type listLeadsArgs struct {
 	Status   string `json:"status,omitempty" jsonschema:"Filter by status: new, contacted, contacted-first-touch, contacted-followup-1, contacted-followup-2, contacted-followup-3, qualified, converted, lost (blank = all)"`
 	Query    string `json:"query,omitempty" jsonschema:"Case-insensitive substring match on name/company/email/tag (blank = all)"`
-	SortBy   string `json:"sort_by,omitempty" jsonschema:"Order by: created (default), quality, or updated"`
+	SortBy   string `json:"sort_by,omitempty" jsonschema:"Order by: updated (default), created, or quality"`
 	Order    string `json:"order,omitempty" jsonschema:"Sort direction: desc (default, newest/highest first) or asc"`
 	Page     int    `json:"page,omitempty" jsonschema:"1-based page number (default 1)"`
 	PageSize int    `json:"page_size,omitempty" jsonschema:"Results per page, 1-50 (default 50; higher values are clamped to 50)"`
@@ -70,7 +70,7 @@ func (h *handlers) registerLeadTools(s *server.MCPServer) {
 
 	s.AddTool(mcp.NewTool(
 		"list_leads",
-		mcp.WithDescription("List leads with optional status filter, substring search, ordering (created/quality/updated), and pagination (max page size 50). Returns the page plus total/total_pages/has_more."),
+		mcp.WithDescription("List leads (minimal fields; use get_lead for the full record) with optional status filter, substring search, ordering (updated default/created/quality), and pagination (max page size 50). Returns the page plus total/total_pages/has_more."),
 		mcp.WithInputSchema[listLeadsArgs](),
 	), mcp.NewTypedToolHandler(h.listLeads))
 
@@ -122,17 +122,8 @@ func (h *handlers) listLeads(_ context.Context, _ mcp.CallToolRequest, a listLea
 	if err != nil {
 		return toolErr(err)
 	}
-	if page.Leads == nil {
-		page.Leads = []models.Lead{}
-	}
-	return jsonResult(map[string]any{
-		"leads":       page.Leads,
-		"page":        page.Page,
-		"page_size":   page.PageSize,
-		"total":       page.Total,
-		"total_pages": page.TotalPages,
-		"has_more":    page.HasMore,
-	})
+	return pageResult("leads", toLeadListItems(page.Leads),
+		page.Page, page.PageSize, page.Total, page.TotalPages, page.HasMore)
 }
 
 func (h *handlers) getLead(_ context.Context, _ mcp.CallToolRequest, a idArg) (*mcp.CallToolResult, error) {

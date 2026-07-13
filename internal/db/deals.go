@@ -6,18 +6,64 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/techthos/leadzaar/internal/models"
 	bolt "go.etcd.io/bbolt"
 )
 
-// errInvalidStage / errMissingContact / errCurrencyRequired are validation
-// failures surfaced by the deal operations.
+// errInvalidStage / errMissingContact / errCurrencyRequired / errInvalidDealSort
+// are validation failures surfaced by the deal operations.
 var (
 	errInvalidStage     = errors.New("invalid deal stage")
 	errMissingContact   = errors.New("contact does not exist")
 	errCurrencyRequired = errors.New("currency required for non-zero value")
+	errInvalidDealSort  = errors.New("invalid deal sort field (want created or updated)")
 )
+
+// DealSort selects the field QueryDeals orders by. An empty value defaults to
+// DealSortUpdated (last-updated first).
+type DealSort string
+
+const (
+	DealSortCreated DealSort = "created" // by ID (creation order)
+	DealSortUpdated DealSort = "updated" // by UpdatedAt, ties broken by ID
+)
+
+// Valid reports whether o is a recognized sort field.
+func (o DealSort) Valid() bool {
+	switch o {
+	case DealSortCreated, DealSortUpdated:
+		return true
+	default:
+		return false
+	}
+}
+
+// DealQuery parameterizes QueryDeals (UC-14): optional Stage and ContactID
+// filters, an optional case-insensitive substring Search over title/company, a
+// sort field + direction, and 1-based pagination. Zero values mean "no filter";
+// SortBy "" defaults to last-updated order.
+type DealQuery struct {
+	ContactID uint64
+	Stage     models.DealStage
+	Search    string
+	SortBy    DealSort
+	Asc       bool // false (zero value) = descending: most-recently-updated first
+	Page      int
+	PageSize  int
+}
+
+// DealPage is one page of QueryDeals results plus pagination metadata describing
+// the full filtered set (mirrors LeadPage).
+type DealPage struct {
+	Deals      []models.Deal `json:"deals"`
+	Page       int           `json:"page"`
+	PageSize   int           `json:"pageSize"`
+	Total      int           `json:"total"`
+	TotalPages int           `json:"totalPages"`
+	HasMore    bool          `json:"hasMore"`
+}
 
 // DealFilter narrows a ListDeals query. Zero values mean "no filter": a 0
 // ContactID matches any contact, an empty Stage matches any stage. The two
@@ -127,6 +173,89 @@ func (s *Store) ListDeals(f DealFilter) ([]models.Deal, error) {
 // DealsForContact returns every deal owned by a contact (UC-12), via the index.
 func (s *Store) DealsForContact(contactID uint64) ([]models.Deal, error) {
 	return s.ListDeals(DealFilter{ContactID: contactID})
+}
+
+// QueryDeals is the flexible, paginated deal listing behind list_deals (UC-14).
+// It seeds from idx_deal_by_contact when ContactID is set (else a full scan),
+// applies the Stage and Search filters in memory, orders by q.SortBy (default
+// last-updated), and slices out one page.
+func (s *Store) QueryDeals(q DealQuery) (DealPage, error) {
+	if q.Stage != "" && !q.Stage.Valid() {
+		return DealPage{}, fmt.Errorf("query deals: %w", errInvalidStage)
+	}
+	if q.SortBy != "" && !q.SortBy.Valid() {
+		return DealPage{}, fmt.Errorf("query deals: %w", errInvalidDealSort)
+	}
+	page, size := normalizePage(q.Page, q.PageSize)
+	byUpdated := q.SortBy != DealSortCreated
+	search := strings.ToLower(strings.TrimSpace(q.Search))
+
+	var matched []models.Deal
+	err := s.view(func(tx *bolt.Tx) error {
+		var names map[uint64]string
+		if search != "" {
+			names = companyNames(tx)
+		}
+		consider := func(d models.Deal) {
+			if q.Stage != "" && d.Stage != q.Stage {
+				return
+			}
+			if search != "" && !dealMatches(d, names[d.CompanyID], search) {
+				return
+			}
+			matched = append(matched, d)
+		}
+
+		deals := tx.Bucket(bucketDeals)
+		if q.ContactID != 0 {
+			prefix := itob(q.ContactID)
+			c := tx.Bucket(bucketDealByContact).Cursor()
+			for k, _ := c.Seek(prefix); k != nil && bytes.HasPrefix(k, prefix); k, _ = c.Next() {
+				v := deals.Get(itob(btoi(k[8:])))
+				if v == nil {
+					continue
+				}
+				var d models.Deal
+				if err := json.Unmarshal(v, &d); err != nil {
+					return err
+				}
+				consider(d)
+			}
+			return nil
+		}
+		return deals.ForEach(func(_, v []byte) error {
+			var d models.Deal
+			if err := json.Unmarshal(v, &d); err != nil {
+				return err
+			}
+			consider(d)
+			return nil
+		})
+	})
+	if err != nil {
+		return DealPage{}, fmt.Errorf("query deals: %w", err)
+	}
+
+	sortByCreatedUpdated(matched, byUpdated, q.Asc,
+		func(d models.Deal) uint64 { return d.ID },
+		func(d models.Deal) time.Time { return d.UpdatedAt })
+
+	items, total, totalPages, hasMore := paginate(matched, page, size)
+	return DealPage{
+		Deals:      items,
+		Page:       page,
+		PageSize:   size,
+		Total:      total,
+		TotalPages: totalPages,
+		HasMore:    hasMore,
+	}, nil
+}
+
+// dealMatches reports whether deal d matches the already-lowercased query q over
+// its title and linked company name (resolved by the caller).
+func dealMatches(d models.Deal, companyName, q string) bool {
+	return strings.Contains(strings.ToLower(d.Title), q) ||
+		strings.Contains(strings.ToLower(companyName), q)
 }
 
 // UpdateDeal persists field changes to an existing deal (UC-16). ID and

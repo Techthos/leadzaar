@@ -2,9 +2,11 @@ package server
 
 import (
 	"context"
+	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/techthos/leadzaar/internal/db"
 	"github.com/techthos/leadzaar/internal/models"
 )
 
@@ -17,7 +19,11 @@ type createCompanyArgs struct {
 }
 
 type listCompaniesArgs struct {
-	Query string `json:"query,omitempty" jsonschema:"Substring match on name/website/industry (blank = all)"`
+	Query    string `json:"query,omitempty" jsonschema:"Substring match on name/website/industry (blank = all)"`
+	SortBy   string `json:"sort_by,omitempty" jsonschema:"Order by: updated (default) or created"`
+	Order    string `json:"order,omitempty" jsonschema:"Sort direction: desc (default, most-recently-updated first) or asc"`
+	Page     int    `json:"page,omitempty" jsonschema:"1-based page number (default 1)"`
+	PageSize int    `json:"page_size,omitempty" jsonschema:"Results per page, 1-50 (default 50; higher values are clamped to 50)"`
 }
 
 // updateCompanyArgs is a partial update: only id is required; omitted editable
@@ -40,7 +46,7 @@ func (h *handlers) registerCompanyTools(s *server.MCPServer) {
 
 	s.AddTool(mcp.NewTool(
 		"list_companies",
-		mcp.WithDescription("List or search companies by name, website, or industry substring."),
+		mcp.WithDescription("List or search companies (minimal fields; use get_company for the full record) by name, website, or industry substring, with ordering (updated default/created) and pagination (max page size 50). Returns the page plus total/total_pages/has_more."),
 		mcp.WithInputSchema[listCompaniesArgs](),
 	), mcp.NewTypedToolHandler(h.listCompanies))
 
@@ -74,11 +80,18 @@ func (h *handlers) createCompany(_ context.Context, _ mcp.CallToolRequest, a cre
 }
 
 func (h *handlers) listCompanies(_ context.Context, _ mcp.CallToolRequest, a listCompaniesArgs) (*mcp.CallToolResult, error) {
-	companies, err := h.store.SearchCompanies(a.Query)
+	page, err := h.store.QueryCompanies(db.CompanyQuery{
+		Search:   a.Query,
+		SortBy:   db.CompanySort(a.SortBy),
+		Asc:      strings.EqualFold(strings.TrimSpace(a.Order), "asc"),
+		Page:     a.Page,
+		PageSize: a.PageSize,
+	})
 	if err != nil {
 		return toolErr(err)
 	}
-	return listResult("companies", companies)
+	return pageResult("companies", toCompanyListItems(page.Companies),
+		page.Page, page.PageSize, page.Total, page.TotalPages, page.HasMore)
 }
 
 func (h *handlers) getCompany(_ context.Context, _ mcp.CallToolRequest, a idArg) (*mcp.CallToolResult, error) {

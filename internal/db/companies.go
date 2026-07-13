@@ -5,14 +5,58 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/techthos/leadzaar/internal/models"
 	bolt "go.etcd.io/bbolt"
 )
 
-// errMissingCompany is returned when a CompanyID references a company that does
-// not exist (mirrors errMissingContact for deals).
-var errMissingCompany = errors.New("company does not exist")
+// errMissingCompany / errInvalidCompanySort are company validation failures.
+var (
+	errMissingCompany     = errors.New("company does not exist")
+	errInvalidCompanySort = errors.New("invalid company sort field (want created or updated)")
+)
+
+// CompanySort selects the field QueryCompanies orders by. An empty value
+// defaults to CompanySortUpdated (last-updated first).
+type CompanySort string
+
+const (
+	CompanySortCreated CompanySort = "created" // by ID (creation order)
+	CompanySortUpdated CompanySort = "updated" // by UpdatedAt, ties broken by ID
+)
+
+// Valid reports whether o is a recognized sort field.
+func (o CompanySort) Valid() bool {
+	switch o {
+	case CompanySortCreated, CompanySortUpdated:
+		return true
+	default:
+		return false
+	}
+}
+
+// CompanyQuery parameterizes QueryCompanies (UC-20): an optional case-insensitive
+// substring Search over name/website/industry, a sort field + direction, and
+// 1-based pagination. SortBy "" defaults to last-updated order.
+type CompanyQuery struct {
+	Search   string
+	SortBy   CompanySort
+	Asc      bool // false (zero value) = descending: most-recently-updated first
+	Page     int
+	PageSize int
+}
+
+// CompanyPage is one page of QueryCompanies results plus pagination metadata
+// describing the full filtered set (mirrors LeadPage).
+type CompanyPage struct {
+	Companies  []models.Company `json:"companies"`
+	Page       int              `json:"page"`
+	PageSize   int              `json:"pageSize"`
+	Total      int              `json:"total"`
+	TotalPages int              `json:"totalPages"`
+	HasMore    bool             `json:"hasMore"`
+}
 
 // CreateCompany inserts a new company. Name is required; a fresh big-endian
 // surrogate ID is assigned and timestamps are set.
@@ -108,6 +152,49 @@ func companyMatches(c models.Company, q string) bool {
 	return strings.Contains(strings.ToLower(c.Name), q) ||
 		strings.Contains(strings.ToLower(c.Website), q) ||
 		strings.Contains(strings.ToLower(c.Industry), q)
+}
+
+// QueryCompanies is the flexible, paginated company listing behind list_companies
+// (UC-20). It full-scans companies, applies the Search filter in memory, orders
+// by q.SortBy (default last-updated), and slices out one page.
+func (s *Store) QueryCompanies(q CompanyQuery) (CompanyPage, error) {
+	if q.SortBy != "" && !q.SortBy.Valid() {
+		return CompanyPage{}, fmt.Errorf("query companies: %w", errInvalidCompanySort)
+	}
+	page, size := normalizePage(q.Page, q.PageSize)
+	byUpdated := q.SortBy != CompanySortCreated
+	search := strings.ToLower(strings.TrimSpace(q.Search))
+
+	var matched []models.Company
+	err := s.view(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketCompanies).ForEach(func(_, v []byte) error {
+			var c models.Company
+			if err := json.Unmarshal(v, &c); err != nil {
+				return err
+			}
+			if search == "" || companyMatches(c, search) {
+				matched = append(matched, c)
+			}
+			return nil
+		})
+	})
+	if err != nil {
+		return CompanyPage{}, fmt.Errorf("query companies: %w", err)
+	}
+
+	sortByCreatedUpdated(matched, byUpdated, q.Asc,
+		func(c models.Company) uint64 { return c.ID },
+		func(c models.Company) time.Time { return c.UpdatedAt })
+
+	items, total, totalPages, hasMore := paginate(matched, page, size)
+	return CompanyPage{
+		Companies:  items,
+		Page:       page,
+		PageSize:   size,
+		Total:      total,
+		TotalPages: totalPages,
+		HasMore:    hasMore,
+	}, nil
 }
 
 // CompanyNames returns an id→name map of every company, for resolving a record's

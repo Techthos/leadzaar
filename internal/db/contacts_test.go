@@ -188,6 +188,84 @@ func TestSearchContacts(t *testing.T) {
 	}
 }
 
+func TestQueryContacts(t *testing.T) {
+	t.Parallel()
+	clk := newClock()
+	store := openTestStore(t, clk)
+
+	a, _ := store.CreateContact(models.Contact{Name: "Acme One", Email: "one@acme.io", Tags: []string{"vip"}})
+	clk.advance(time.Hour)
+	if _, err := store.CreateContact(models.Contact{Name: "Beta Two", Email: "two@beta.io"}); err != nil {
+		t.Fatalf("CreateContact: %v", err)
+	}
+	clk.advance(time.Hour)
+	c3, _ := store.CreateContact(models.Contact{Name: "Acme Three"})
+
+	t.Run("default last-updated-first with metadata", func(t *testing.T) {
+		got, err := store.QueryContacts(db.ContactQuery{})
+		if err != nil {
+			t.Fatalf("QueryContacts: %v", err)
+		}
+		if len(got.Contacts) != 3 || got.Contacts[0].ID != c3.ID {
+			t.Errorf("default first = %d, want %d", firstContactID(got), c3.ID)
+		}
+		if got.Total != 3 || got.TotalPages != 1 || got.PageSize != 50 || got.HasMore {
+			t.Errorf("metadata = %+v", got)
+		}
+	})
+
+	t.Run("updated jumps to front", func(t *testing.T) {
+		clk.advance(time.Hour)
+		if _, err := store.UpdateContact(a); err != nil {
+			t.Fatalf("UpdateContact: %v", err)
+		}
+		got, _ := store.QueryContacts(db.ContactQuery{})
+		if firstContactID(got) != a.ID {
+			t.Errorf("updated-first = %d, want %d", firstContactID(got), a.ID)
+		}
+	})
+
+	t.Run("search, email, and tag filters", func(t *testing.T) {
+		bySearch, _ := store.QueryContacts(db.ContactQuery{Search: "acme"})
+		if bySearch.Total != 2 {
+			t.Errorf("search total = %d, want 2", bySearch.Total)
+		}
+		byEmail, _ := store.QueryContacts(db.ContactQuery{Email: "one@acme.io"})
+		if byEmail.Total != 1 || firstContactID(byEmail) != a.ID {
+			t.Errorf("email filter = %+v", byEmail)
+		}
+		byTag, _ := store.QueryContacts(db.ContactQuery{Tag: "vip"})
+		if byTag.Total != 1 || firstContactID(byTag) != a.ID {
+			t.Errorf("tag filter = %+v", byTag)
+		}
+	})
+
+	t.Run("pagination and page_size clamp", func(t *testing.T) {
+		p1, _ := store.QueryContacts(db.ContactQuery{Page: 1, PageSize: 2})
+		if len(p1.Contacts) != 2 || !p1.HasMore || p1.TotalPages != 2 {
+			t.Errorf("page 1 = %+v", p1)
+		}
+		clamp, _ := store.QueryContacts(db.ContactQuery{PageSize: 1000})
+		if clamp.PageSize != 50 {
+			t.Errorf("page_size = %d, want clamped to 50", clamp.PageSize)
+		}
+	})
+
+	t.Run("invalid sort rejected", func(t *testing.T) {
+		if _, err := store.QueryContacts(db.ContactQuery{SortBy: db.ContactSort("bogus")}); err == nil {
+			t.Error("expected error for bad sort")
+		}
+	})
+}
+
+// firstContactID returns the first contact's ID in a page, or 0 if empty.
+func firstContactID(p db.ContactPage) uint64 {
+	if len(p.Contacts) == 0 {
+		return 0
+	}
+	return p.Contacts[0].ID
+}
+
 func TestUpdateContact(t *testing.T) {
 	t.Parallel()
 	clk := newClock()

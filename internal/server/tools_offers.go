@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -18,7 +19,12 @@ type createOfferArgs struct {
 }
 
 type listOffersArgs struct {
-	LeadID uint64 `json:"lead_id,omitempty" jsonschema:"Filter by owning lead id (0 = all)"`
+	LeadID   uint64 `json:"lead_id,omitempty" jsonschema:"Filter by owning lead id (0 = all)"`
+	Query    string `json:"query,omitempty" jsonschema:"Substring match on title/subject (blank = all)"`
+	SortBy   string `json:"sort_by,omitempty" jsonschema:"Order by: updated (default) or created"`
+	Order    string `json:"order,omitempty" jsonschema:"Sort direction: desc (default, most-recently-updated first) or asc"`
+	Page     int    `json:"page,omitempty" jsonschema:"1-based page number (default 1)"`
+	PageSize int    `json:"page_size,omitempty" jsonschema:"Results per page, 1-50 (default 50; higher values are clamped to 50)"`
 }
 
 // updateOfferArgs is a partial update: id and lead_id are required (lead_id
@@ -42,7 +48,7 @@ func (h *handlers) registerOfferTools(s *server.MCPServer) {
 
 	s.AddTool(mcp.NewTool(
 		"list_offers",
-		mcp.WithDescription("List offers, optionally filtered by owning lead."),
+		mcp.WithDescription("List offers (minimal fields; use get_offer for the full record incl. body), optionally filtered by owning lead and/or substring query, with ordering (updated default/created) and pagination (max page size 50). Returns the page plus total/total_pages/has_more."),
 		mcp.WithInputSchema[listOffersArgs](),
 	), mcp.NewTypedToolHandler(h.listOffers))
 
@@ -76,11 +82,19 @@ func (h *handlers) createOffer(_ context.Context, _ mcp.CallToolRequest, a creat
 }
 
 func (h *handlers) listOffers(_ context.Context, _ mcp.CallToolRequest, a listOffersArgs) (*mcp.CallToolResult, error) {
-	offers, err := h.store.ListOffers(db.OfferFilter{LeadID: a.LeadID})
+	page, err := h.store.QueryOffers(db.OfferQuery{
+		LeadID:   a.LeadID,
+		Search:   a.Query,
+		SortBy:   db.OfferSort(a.SortBy),
+		Asc:      strings.EqualFold(strings.TrimSpace(a.Order), "asc"),
+		Page:     a.Page,
+		PageSize: a.PageSize,
+	})
 	if err != nil {
 		return toolErr(err)
 	}
-	return listResult("offers", offers)
+	return pageResult("offers", toOfferListItems(page.Offers),
+		page.Page, page.PageSize, page.Total, page.TotalPages, page.HasMore)
 }
 
 func (h *handlers) getOffer(_ context.Context, _ mcp.CallToolRequest, a idArg) (*mcp.CallToolResult, error) {

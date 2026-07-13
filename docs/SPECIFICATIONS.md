@@ -225,8 +225,9 @@ as a plain string is upgraded to a `CompanyID` reference by an idempotent startu
 
 ### Lookups served
 - **By ID** (all entities): direct `Get` on the primary bucket.
-- **List all / newest-first** (all entities): cursor walk of the primary bucket; reverse for
-  newest-first (IDs are creation-ordered).
+- **List all** (all entities): cursor walk of the primary bucket. The internal `List*`/`Search*`
+  helpers (TUI, prompts) walk in creation order; the `list_*` MCP tools re-sort the matching set by
+  **last-updated first** (see below).
 - **Contacts by email:** prefix-scan `idx_contact_by_email` on `lower(email)\x00`.
 - **Deals for a contact:** prefix-scan `idx_deal_by_contact` on the 8-byte contactID prefix.
 - **Offers for a lead:** prefix-scan `idx_offer_by_lead` on the 8-byte leadID prefix.
@@ -234,12 +235,15 @@ as a plain string is upgraded to a `CompanyID` reference by an idempotent startu
   with in-memory filtering. Acceptable because this is a single-user dataset (hundreds–low
   thousands of rows); **no status/stage index in v1.** If volume ever demands it, add
   `idx_lead_by_status` / `idx_deal_by_stage` — that is a spec change.
-- **Leads — search, sort, paginate (`list_leads`):** one full `leads` scan filters by status and an
-  optional case-insensitive substring over name/company/email/tags, sorts the whole matching set
-  in memory by `created` (default), `quality`, or `updated` (`order` desc by default, ID as a stable
-  tiebreaker), then slices out a 1-based page. `page_size` is clamped to `[1, 50]` (default 50;
-  values above 50 are silently capped), and the result carries `total`/`total_pages`/`has_more` so an
-  agent can walk the rest. No lead index in v1 — the scan + in-memory sort is acceptable at
+- **Every `list_*` tool — search, sort, paginate (minimal items):** each list tool runs one full
+  primary-bucket scan, applies its filters + an optional case-insensitive substring search, sorts the
+  whole matching set in memory (default **`updated`** = last-updated first; `order` desc by default,
+  ID as a stable tiebreaker), then slices out a 1-based page. `page_size` is clamped to `[1, 50]`
+  (default 50; values above 50 are silently capped), and the result carries
+  `total`/`total_pages`/`has_more` so an agent can walk the rest. Sort fields are `created`/`updated`
+  for every entity, plus `quality` for leads. The returned items are **minimal projections** (short
+  scalars only — no long/freeform text); the full record is fetched with `get_*` or the
+  `crm://.../{id}` resource. No per-field index in v1 — the scan + in-memory sort is acceptable at
   single-user scale.
 - **Companies (list / search by name·website·industry):** full `companies` scan. **Records linked to
   a Company** (driving unlink-on-delete): scan `leads`, `contacts`, `deals` for a matching
@@ -262,7 +266,9 @@ MCP, or both — all are available on both surfaces unless noted).
 
 ### Leads
 1. **Create lead** — insert a `Lead` (`Status` defaults to `new`). Repo: `leads.Put`. Surfaces: both.
-2. **List leads** — list all leads, optional filter by `Status`. Repo: scan `leads`. Surfaces: both.
+2. **List leads** — list leads with optional `Status` filter, substring search, sort
+   (`updated` default / `created` / `quality`), and pagination. The MCP `list_leads` tool returns
+   **minimal items** (no `Notes`) ordered last-updated-first. Repo: scan `leads`. Surfaces: both.
 3. **Get lead** — fetch by ID. Repo: `leads.Get`. Surfaces: both.
 4. **Update lead** — edit fields / advance `Status`. Repo: `leads.Put` (+ email index if Lead email
    were indexed — leads are not email-indexed in v1, so no index work). Surfaces: both.
@@ -278,8 +284,10 @@ MCP, or both — all are available on both surfaces unless noted).
 ### Contacts
 7. **Create contact (direct)** — insert a `Contact` not originating from a lead
    (`SourceLeadID = 0`). Repo: `contacts.Put` + `idx_contact_by_email`. Surfaces: both.
-8. **List / search contacts** — list all, or filter by name-substring, email, or tag. Repo: email →
-   `idx_contact_by_email` prefix-scan; name/tag → `contacts` scan. Surfaces: both.
+8. **List / search contacts** — filter by name-substring/email/tag, with sort
+   (`updated` default / `created`) and pagination. The MCP `list_contacts` tool returns **minimal
+   items** (no `Notes`) ordered last-updated-first. Repo: email → `idx_contact_by_email` prefix-scan;
+   otherwise `contacts` scan. Surfaces: both.
 9. **Get contact** — fetch by ID. Repo: `contacts.Get`. Surfaces: both.
 10. **Update contact** — edit fields; maintain email index on email change. Repo: `contacts.Put` +
     index. Surfaces: both.
@@ -292,7 +300,9 @@ MCP, or both — all are available on both surfaces unless noted).
 ### Deals
 13. **Create deal** — insert a `Deal` for an existing contact (validates `ContactID`). Repo:
     `deals.Put` + `idx_deal_by_contact`. Surfaces: both.
-14. **List deals** — list all, optional filter by `Stage` and/or `ContactID`. Repo: `deals` scan, or
+14. **List deals** — filter by `Stage` and/or `ContactID` and an optional substring search over
+    title/company, with sort (`updated` default / `created`) and pagination. The MCP `list_deals`
+    tool returns **minimal items** (no `Notes`) ordered last-updated-first. Repo: `deals` scan, or
     `idx_deal_by_contact` when filtering by contact. Surfaces: both.
 15. **Get deal** — fetch by ID. Repo: `deals.Get`. Surfaces: both.
 16. **Update deal** — edit fields / advance `Stage`. Repo: `deals.Put` (+ index if `ContactID`
@@ -310,8 +320,9 @@ MCP, or both — all are available on both surfaces unless noted).
 
 ### Companies
 19. **Create company** — insert a `Company` (Name required). Repo: `companies.Put`. Surfaces: both.
-20. **List / search companies** — list all, or filter by name/website/industry substring. Repo:
-    scan `companies`. Surfaces: both.
+20. **List / search companies** — filter by name/website/industry substring, with sort
+    (`updated` default / `created`) and pagination. The MCP `list_companies` tool returns **minimal
+    items** (no `Notes`) ordered last-updated-first. Repo: scan `companies`. Surfaces: both.
 21. **Get company** — fetch by ID. Repo: `companies.Get`. Surfaces: both.
 22. **Update company** — edit fields. Repo: `companies.Put`. Surfaces: both.
 23. **Delete company (unlink)** — delete the company and reset `CompanyID = 0` on **every** Lead,
@@ -325,8 +336,11 @@ record carries an optional `CompanyID`, validated to reference an existing Compa
 ### Offers
 24. **Create offer** — insert an `Offer` for an existing lead (validates `LeadID`; `Title` required).
     Repo: `offers.Put` + `idx_offer_by_lead`. Surfaces: both.
-25. **List offers** — list all, optional filter by `LeadID`. Repo: `offers` scan, or
-    `idx_offer_by_lead` when filtering by lead. Surfaces: both.
+25. **List offers** — filter by `LeadID` and an optional substring search over title/subject, with
+    sort (`updated` default / `created`) and pagination. The MCP `list_offers` tool returns **minimal
+    items** (id, leadId, title, subject, timestamps — no `Description`/`Body`) ordered
+    last-updated-first. Repo: `offers` scan, or `idx_offer_by_lead` when filtering by lead. Surfaces:
+    both.
 26. **Get offer** — fetch by ID. Repo: `offers.Get`. Surfaces: both.
 27. **Update offer** — edit fields (title, description, subject, body); maintain `idx_offer_by_lead`
     if `LeadID` changes (new lead must exist). Repo: `offers.Put` + index. Surfaces: both.
@@ -370,28 +384,28 @@ to **stderr** only (stdout is the protocol channel). User/input errors →
 | tool              | purpose                              | input (key fields)                                                                 | output                                  |
 |-------------------|--------------------------------------|------------------------------------------------------------------------------------|-----------------------------------------|
 | `create_lead`     | UC-1 add a lead                      | name (req), company_id?, email, phone, tags[], quality?, source, notes             | created Lead                            |
-| `list_leads`      | UC-2 list/search/sort/paginate leads | status?, query? (name/company/email/tag substring), sort_by? (created/quality/updated), order? (desc/asc), page?, page_size? (≤50) | { leads: Lead[], page, page_size, total, total_pages, has_more } |
+| `list_leads`      | UC-2 list/search/sort/paginate leads | status?, query? (name/company/email/tag substring), sort_by? (updated default/created/quality), order? (desc/asc), page?, page_size? (≤50) | { leads: MinimalLead[], page, page_size, total, total_pages, has_more } |
 | `get_lead`        | UC-3 fetch a lead                    | id (req)                                                                            | Lead                                    |
 | `update_lead`     | UC-4 edit/advance a lead             | id (req) + any editable fields incl. status, company_id, quality                   | updated Lead                            |
 | `convert_lead`    | UC-5 convert to contact (+deal)      | id (req), make_deal (bool), deal_title?, deal_value?, deal_currency?               | { contact, deal? , lead }               |
 | `delete_lead`     | UC-6 delete a lead (cascade offers)  | id (req)                                                                            | { deleted, deleted_offer_ids[] }        |
 | `create_contact`  | UC-7 add a contact                   | name (req), company_id?, email, phone, tags[], notes                               | created Contact                         |
-| `list_contacts`   | UC-8 list/search contacts            | query? (name substring), email?, tag?                                              | { contacts: Contact[] }                 |
+| `list_contacts`   | UC-8 list/search/sort/paginate contacts | query? (name/company/email/tag substring), email?, tag?, sort_by? (updated default/created), order? (desc/asc), page?, page_size? (≤50) | { contacts: MinimalContact[], page, page_size, total, total_pages, has_more } |
 | `get_contact`     | UC-9 fetch a contact                 | id (req)                                                                            | Contact                                 |
 | `update_contact`  | UC-10 edit a contact                 | id (req) + editable fields incl. company_id                                         | updated Contact                         |
 | `delete_contact`  | UC-11 delete (cascade deals)         | id (req)                                                                            | { deleted_deal_ids[] }                  |
 | `create_deal`     | UC-13 add a deal                     | title (req), contact_id (req), company_id?, value, currency, stage, notes          | created Deal                            |
-| `list_deals`      | UC-14 list/filter deals              | stage?, contact_id?                                                                 | { deals: Deal[] }                       |
+| `list_deals`      | UC-14 list/filter/sort/paginate deals | stage?, contact_id?, query? (title/company substring), sort_by? (updated default/created), order? (desc/asc), page?, page_size? (≤50) | { deals: MinimalDeal[], page, page_size, total, total_pages, has_more } |
 | `get_deal`        | UC-15 fetch a deal                   | id (req)                                                                            | Deal                                    |
 | `update_deal`     | UC-16 edit/advance a deal            | id (req) + editable fields incl. stage, company_id                                 | updated Deal                            |
 | `delete_deal`     | UC-17 delete a deal                  | id (req)                                                                            | ok                                      |
 | `create_company`  | UC-19 add a company                  | name (req), website?, industry?, phone?, notes?                                     | created Company                         |
-| `list_companies`  | UC-20 list/search companies          | query? (name/website/industry substring)                                           | { companies: Company[] }                |
+| `list_companies`  | UC-20 list/search/sort/paginate companies | query? (name/website/industry substring), sort_by? (updated default/created), order? (desc/asc), page?, page_size? (≤50) | { companies: MinimalCompany[], page, page_size, total, total_pages, has_more } |
 | `get_company`     | UC-21 fetch a company                | id (req)                                                                            | Company                                 |
 | `update_company`  | UC-22 edit a company                 | id (req) + editable fields                                                          | updated Company                         |
 | `delete_company`  | UC-23 delete (unlink references)     | id (req)                                                                            | { deleted, unlinked }                   |
 | `create_offer`    | UC-24 add an offer                   | lead_id (req), title (req), description?, subject?, body?                           | created Offer                           |
-| `list_offers`     | UC-25 list/filter offers             | lead_id?                                                                            | { offers: Offer[] }                     |
+| `list_offers`     | UC-25 list/filter/sort/paginate offers | lead_id?, query? (title/subject substring), sort_by? (updated default/created), order? (desc/asc), page?, page_size? (≤50) | { offers: MinimalOffer[], page, page_size, total, total_pages, has_more } |
 | `get_offer`       | UC-26 fetch an offer                 | id (req)                                                                            | Offer                                   |
 | `update_offer`    | UC-27 edit an offer                  | id (req), lead_id (req) + editable fields (title, description, subject, body)       | updated Offer                           |
 | `delete_offer`    | UC-28 delete an offer                | id (req)                                                                            | ok                                      |
@@ -401,11 +415,21 @@ Tools with more than one or two args use typed input structs (`jsonschema` tags)
 `mcp.WithInputSchema[T]()` / `NewStructuredToolHandler`. Every tool and parameter carries a
 description. A `jsonschema` tag value is a plain description string (the schema generator,
 `google/jsonschema-go`, treats the whole tag as the description); a field is **required** unless its
-`json` tag carries `omitempty`. List tools return their slice wrapped in a single-key object (e.g.
-`{ leads: [...] }`) because a result's structured content must be a JSON object, never a bare array.
-`list_leads` is paginated, so it wraps its slice alongside pagination metadata
-(`{ leads, page, page_size, total, total_pages, has_more }`); the other list tools return the full
-slice unpaginated.
+`json` tag carries `omitempty`. **Every list tool is paginated** and wraps its item slice under a
+single entity key alongside pagination metadata (`{ <items>, page, page_size, total, total_pages,
+has_more }`) — the structured content must be a JSON object, never a bare array. List items are
+**minimal projections** that carry short scalars only and **drop long/freeform text** to keep
+responses small; the complete record (including that text) is fetched with `get_*` or the
+`crm://.../{id}` resource. Per entity the omitted fields are:
+
+- **MinimalLead** — drops `notes` (keeps id, name, companyId, email, phone, tags, quality, source,
+  status, contactId, dealId, timestamps).
+- **MinimalContact** — drops `notes` (keeps id, name, companyId, email, phone, tags, sourceLeadId,
+  timestamps).
+- **MinimalDeal** — drops `notes` (keeps id, title, contactId, companyId, value, currency, stage,
+  timestamps).
+- **MinimalCompany** — drops `notes` (keeps id, name, website, industry, phone, timestamps).
+- **MinimalOffer** — drops `description` and `body` (keeps id, leadId, title, subject, timestamps).
 
 ### Resources (read-only)
 
@@ -517,12 +541,14 @@ selection is guarded. Below 80×24 the UI shows a centered "Terminal too small" 
 - **UC-1 Create lead:** a lead with a non-empty name persists with a fresh monotonic ID,
   `Status = new`, and timestamps set; empty name is rejected; invalid `source` is rejected; a
   `quality` outside `1`–`10` is rejected (`0`/unset is accepted).
-- **UC-2 List leads:** by default leads are returned newest-first; filtering by a status returns
-  exactly the leads in that status; a `query` substring matches case-insensitively on
-  name/company/email/tag; `sort_by` (`created`/`quality`/`updated`) with `order` (`desc` default,
-  `asc`) reorders the full filtered set with ID as a stable tiebreaker; results are paginated 1-based
-  with `page_size` clamped to `[1, 50]` (default 50), and the response reports `total`,
-  `total_pages`, and `has_more` for the full filtered set. An invalid status or `sort_by` is rejected.
+- **UC-2 List leads:** by default leads are returned **most-recently-updated first** (`sort_by`
+  defaults to `updated`), and the `list_leads` items are **minimal** (no `notes`); filtering by a
+  status returns exactly the leads in that status; a `query` substring matches case-insensitively on
+  name/company/email/tag; `sort_by` (`updated` default/`created`/`quality`) with `order` (`desc`
+  default, `asc`) reorders the full filtered set with ID as a stable tiebreaker; results are
+  paginated 1-based with `page_size` clamped to `[1, 50]` (default 50), and the response reports
+  `total`, `total_pages`, and `has_more` for the full filtered set. An invalid status or `sort_by` is
+  rejected.
 - **UC-3 Get lead:** a known ID returns the lead; an unknown ID returns a clean not-found (no panic).
 - **UC-4 Update lead:** a **partial update** — only supplied fields change; any field the caller
   omits keeps its stored value (an explicit empty value clears it). Edited fields persist,
@@ -538,7 +564,10 @@ selection is guarded. Below 80×24 the UI shows a centered "Terminal too small" 
 - **UC-7 Create contact:** a named contact persists with a fresh ID and, if email is present, an
   `idx_contact_by_email` entry exists.
 - **UC-8 List/search contacts:** email search returns all contacts with that email via the index;
-  name-substring and tag filters return the matching contacts.
+  name-substring and tag filters return the matching contacts; the `list_contacts` items are
+  **minimal** (no `notes`), default most-recently-updated first, `sort_by` (`updated`/`created`) with
+  `order` reorders, results are paginated with `page_size` clamped to `[1, 50]`, and an invalid
+  `sort_by` is rejected.
 - **UC-9/10 Get/Update contact:** get returns the record; update persists field changes, advances
   `UpdatedAt`, and rewrites the email index when email changes (old key gone, new key present).
 - **UC-11 Delete contact (cascade):** deleting a contact removes the contact, **every** deal with
@@ -548,8 +577,11 @@ selection is guarded. Below 80×24 the UI shows a centered "Terminal too small" 
 - **UC-13 Create deal:** a deal with a non-empty title and an **existing** `contact_id` persists with
   a fresh ID and an `idx_deal_by_contact` entry; a deal referencing a non-existent contact is
   rejected; empty title is rejected; invalid stage is rejected.
-- **UC-14 List deals:** unfiltered returns all; `stage` filter and `contact_id` filter each narrow
-  correctly and compose.
+- **UC-14 List deals:** unfiltered returns all; `stage`, `contact_id`, and a `query` substring over
+  title/company each narrow correctly and compose; the `list_deals` items are **minimal** (no
+  `notes`), default most-recently-updated first, `sort_by` (`updated`/`created`) with `order`
+  reorders, results are paginated with `page_size` clamped to `[1, 50]`, and an invalid `stage` or
+  `sort_by` is rejected.
 - **UC-15/16 Get/Update deal:** get returns the record; update persists changes incl. stage, advances
   `UpdatedAt`, and maintains the contact index if `ContactID` changes.
 - **UC-17 Delete deal:** the deal and its `idx_deal_by_contact` entry are removed.
@@ -559,6 +591,9 @@ selection is guarded. Below 80×24 the UI shows a centered "Terminal too small" 
 - **UC-19…22 Company CRUD:** a company with a non-empty name persists with a fresh monotonic ID and
   timestamps; empty name is rejected; get returns the record, update persists changes and advances
   `UpdatedAt` (ID and `CreatedAt` unchanged); list/search returns matches by name/website/industry.
+  The `list_companies` items are **minimal** (no `notes`), default most-recently-updated first,
+  `sort_by` (`updated`/`created`) with `order` reorders, results are paginated with `page_size`
+  clamped to `[1, 50]`, and an invalid `sort_by` is rejected.
 - **Company link validation:** creating or updating a Lead, Contact, or Deal with a non-zero
   `CompanyID` that references no existing Company is rejected; `CompanyID = 0` is always accepted; a
   converted Contact inherits the Lead's `CompanyID`.
@@ -571,7 +606,10 @@ selection is guarded. Below 80×24 the UI shows a centered "Terminal too small" 
   an offer referencing a non-existent lead is rejected; get returns the record; update persists
   changes (incl. body), advances `UpdatedAt` (ID and `CreatedAt` unchanged), and rewrites the lead
   index when `LeadID` changes; list unfiltered returns all, the `lead_id` filter narrows via the
-  index.
+  index, and a `query` substring narrows over title/subject. The `list_offers` items are **minimal**
+  (id, leadId, title, subject, timestamps — no `description`/`body`), default most-recently-updated
+  first, `sort_by` (`updated`/`created`) with `order` reorders, results are paginated with
+  `page_size` clamped to `[1, 50]`, and an invalid `sort_by` is rejected.
 - **UC-28 Delete offer:** the offer and its `idx_offer_by_lead` entry are removed.
 - **Legacy migration:** a Lead/Contact persisted with a plain-string `company` is upgraded on open to
   a `CompanyID` referencing a (find-or-created, deduped-by-name) Company, and the legacy key is

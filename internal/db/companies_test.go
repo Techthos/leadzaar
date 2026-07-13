@@ -94,6 +94,65 @@ func TestSearchCompanies(t *testing.T) {
 	}
 }
 
+func TestQueryCompanies(t *testing.T) {
+	t.Parallel()
+	clk := newClock()
+	store := openTestStore(t, clk)
+
+	c1, _ := store.CreateCompany(models.Company{Name: "Acme", Industry: "Manufacturing"})
+	clk.advance(time.Hour)
+	if _, err := store.CreateCompany(models.Company{Name: "Globex", Industry: "Energy"}); err != nil {
+		t.Fatalf("CreateCompany: %v", err)
+	}
+	clk.advance(time.Hour)
+	c3, _ := store.CreateCompany(models.Company{Name: "Initech"})
+
+	first := func(p db.CompanyPage) uint64 {
+		if len(p.Companies) == 0 {
+			return 0
+		}
+		return p.Companies[0].ID
+	}
+
+	t.Run("default last-updated-first with metadata", func(t *testing.T) {
+		got, err := store.QueryCompanies(db.CompanyQuery{})
+		if err != nil {
+			t.Fatalf("QueryCompanies: %v", err)
+		}
+		if got.Total != 3 || first(got) != c3.ID {
+			t.Errorf("default first = %d, want %d (total %d)", first(got), c3.ID, got.Total)
+		}
+	})
+
+	t.Run("updated jumps to front", func(t *testing.T) {
+		clk.advance(time.Hour)
+		if _, err := store.UpdateCompany(c1); err != nil {
+			t.Fatalf("UpdateCompany: %v", err)
+		}
+		got, _ := store.QueryCompanies(db.CompanyQuery{})
+		if first(got) != c1.ID {
+			t.Errorf("updated-first = %d, want %d", first(got), c1.ID)
+		}
+	})
+
+	t.Run("search filter", func(t *testing.T) {
+		got, _ := store.QueryCompanies(db.CompanyQuery{Search: "glob"})
+		if got.Total != 1 {
+			t.Errorf("search total = %d, want 1", got.Total)
+		}
+	})
+
+	t.Run("pagination clamp and invalid sort rejected", func(t *testing.T) {
+		clamp, _ := store.QueryCompanies(db.CompanyQuery{PageSize: 1000})
+		if clamp.PageSize != 50 {
+			t.Errorf("page_size = %d, want clamped to 50", clamp.PageSize)
+		}
+		if _, err := store.QueryCompanies(db.CompanyQuery{SortBy: db.CompanySort("bogus")}); err == nil {
+			t.Error("expected error for bad sort")
+		}
+	})
+}
+
 func TestCompanyReferenceValidation(t *testing.T) {
 	t.Parallel()
 	store := openTestStore(t, newClock())

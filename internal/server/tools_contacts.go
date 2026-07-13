@@ -2,9 +2,11 @@ package server
 
 import (
 	"context"
+	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/techthos/leadzaar/internal/db"
 	"github.com/techthos/leadzaar/internal/models"
 )
 
@@ -18,9 +20,13 @@ type createContactArgs struct {
 }
 
 type listContactsArgs struct {
-	Query string `json:"query,omitempty" jsonschema:"Substring match on name/company/email/tag (blank = all)"`
-	Email string `json:"email,omitempty" jsonschema:"Exact email lookup via index"`
-	Tag   string `json:"tag,omitempty" jsonschema:"Match contacts carrying this tag"`
+	Query    string `json:"query,omitempty" jsonschema:"Substring match on name/company/email/tag (blank = all)"`
+	Email    string `json:"email,omitempty" jsonschema:"Exact email lookup via index"`
+	Tag      string `json:"tag,omitempty" jsonschema:"Match contacts carrying this tag"`
+	SortBy   string `json:"sort_by,omitempty" jsonschema:"Order by: updated (default) or created"`
+	Order    string `json:"order,omitempty" jsonschema:"Sort direction: desc (default, most-recently-updated first) or asc"`
+	Page     int    `json:"page,omitempty" jsonschema:"1-based page number (default 1)"`
+	PageSize int    `json:"page_size,omitempty" jsonschema:"Results per page, 1-50 (default 50; higher values are clamped to 50)"`
 }
 
 // updateContactArgs is a partial update: only id is required; omitted editable
@@ -44,7 +50,7 @@ func (h *handlers) registerContactTools(s *server.MCPServer) {
 
 	s.AddTool(mcp.NewTool(
 		"list_contacts",
-		mcp.WithDescription("List or search contacts by query, exact email, or tag."),
+		mcp.WithDescription("List or search contacts (minimal fields; use get_contact for the full record) by query, exact email, or tag, with ordering (updated default/created) and pagination (max page size 50). Returns the page plus total/total_pages/has_more."),
 		mcp.WithInputSchema[listContactsArgs](),
 	), mcp.NewTypedToolHandler(h.listContacts))
 
@@ -78,22 +84,20 @@ func (h *handlers) createContact(_ context.Context, _ mcp.CallToolRequest, a cre
 }
 
 func (h *handlers) listContacts(_ context.Context, _ mcp.CallToolRequest, a listContactsArgs) (*mcp.CallToolResult, error) {
-	var (
-		contacts []models.Contact
-		err      error
-	)
-	switch {
-	case a.Email != "":
-		contacts, err = h.store.FindContactsByEmail(a.Email)
-	case a.Tag != "":
-		contacts, err = h.store.SearchContacts(a.Tag)
-	default:
-		contacts, err = h.store.SearchContacts(a.Query)
-	}
+	page, err := h.store.QueryContacts(db.ContactQuery{
+		Email:    a.Email,
+		Tag:      a.Tag,
+		Search:   a.Query,
+		SortBy:   db.ContactSort(a.SortBy),
+		Asc:      strings.EqualFold(strings.TrimSpace(a.Order), "asc"),
+		Page:     a.Page,
+		PageSize: a.PageSize,
+	})
 	if err != nil {
 		return toolErr(err)
 	}
-	return listResult("contacts", contacts)
+	return pageResult("contacts", toContactListItems(page.Contacts),
+		page.Page, page.PageSize, page.Total, page.TotalPages, page.HasMore)
 }
 
 func (h *handlers) getContact(_ context.Context, _ mcp.CallToolRequest, a idArg) (*mcp.CallToolResult, error) {

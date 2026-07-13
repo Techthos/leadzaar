@@ -126,7 +126,9 @@ func TestQueryLeads(t *testing.T) {
 		return out
 	}
 
-	t.Run("default is newest-first with full-page metadata", func(t *testing.T) {
+	t.Run("default is last-updated-first with full-page metadata", func(t *testing.T) {
+		// No record has been updated yet, so UpdatedAt == CreatedAt and the
+		// default (last-updated-first) coincides with newest-created-first.
 		got, err := store.QueryLeads(db.LeadQuery{})
 		if err != nil {
 			t.Fatalf("QueryLeads: %v", err)
