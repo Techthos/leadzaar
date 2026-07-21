@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -87,13 +89,19 @@ func WithClock(now func() time.Time) Option {
 }
 
 // Open prepares a Store for the bbolt file at path and returns it ready to use.
-// It bootstraps by opening read-write once to create the file and run the bucket
-// migration, then closing — the subsequent read-only opens that reads use cannot
-// create a missing file. After Open returns, the Store holds no file lock.
+// It creates the parent directory if missing, then bootstraps by opening
+// read-write once to create the file and run the bucket migration, then closing
+// — the subsequent read-only opens that reads use cannot create a missing file.
+// After Open returns, the Store holds no file lock.
 func Open(path string, opts ...Option) (*Store, error) {
 	s := &Store{path: path, now: time.Now}
 	for _, o := range opts {
 		o(s)
+	}
+	if dir := filepath.Dir(path); dir != "" {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, fmt.Errorf("create db directory %q: %w", dir, err)
+		}
 	}
 	bdb, err := s.open(false)
 	if err != nil {

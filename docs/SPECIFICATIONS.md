@@ -198,6 +198,11 @@ sending email is out of scope.
   one-time read-write bootstrap at startup creates the file and runs the idempotent bucket migration
   (read-only opens cannot create the file). See `.claude/rules/db-rules.md` and
   `docs/bbolt-concurrent-access-strategy.md`.
+- **Database location:** resolved identically by both surfaces, in this order — the `-db` flag, then
+  the `LEADZAAR_DB` environment variable, then the default `~/.local/leadzaar/default.db`. The
+  parent directory is created (`0755`) on first open if missing; the file itself is `0600`. Because
+  the default is machine-wide rather than working-directory-relative, starting the TUI and the MCP
+  server from different directories still lands both on the same file.
 - **Change detection:** `Store.TxID()` returns bbolt's latest committed transaction ID (monotonic).
   Long-lived readers (the TUI) poll it to detect that another process has written, without scanning
   data.
@@ -696,3 +701,6 @@ selection is guarded. Below 80×24 the UI shows a centered "Terminal too small" 
   would be a primary-bucket scan.
 - **Mode selection:** assumed the binary picks TUI vs. MCP at launch (e.g. a flag/subcommand or env
   var, decided in `cmd/`), never running both against the file at once.
+- **Single default database:** v1 has one database per machine (the resolved path above), with no
+  named profiles or workspaces. Pointing `-db` / `LEADZAAR_DB` at another file is the whole
+  multi-database story; a first-class profile concept would be a spec change.

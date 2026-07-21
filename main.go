@@ -38,7 +38,7 @@ func main() {
 func run(args []string) error {
 	fs := flag.NewFlagSet("leadzaar", flag.ContinueOnError)
 	mode := fs.String("mode", "tui", "surface to start: tui | mcp")
-	dbPath := fs.String("db", "leadzaar.db", "path to the bbolt database file")
+	dbFlag := fs.String("db", "", "path to the bbolt database file (default $LEADZAAR_DB, else ~/.local/leadzaar/default.db)")
 	showVersion := fs.Bool("version", false, "print version and exit")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -49,19 +49,31 @@ func run(args []string) error {
 		return nil
 	}
 
+	// Resolution order: -db flag > $LEADZAAR_DB > ~/.local/leadzaar/default.db.
+	// Both surfaces resolve it the same way, so TUI and MCP land on one file
+	// without either having to be told where it is.
+	dbPath := *dbFlag
+	if dbPath == "" {
+		resolved, err := db.DefaultPath()
+		if err != nil {
+			return err
+		}
+		dbPath = resolved
+	}
+
 	// The TUI and MCP server share one bbolt file. The store opens it per
 	// operation, so the two surfaces can run as concurrent processes. Open the
 	// store for the chosen surface and close it on exit.
 	switch *mode {
 	case "tui":
-		store, err := db.Open(*dbPath)
+		store, err := db.Open(dbPath)
 		if err != nil {
 			return err
 		}
 		defer func() { _ = store.Close() }()
 		return tui.Run(store)
 	case "mcp":
-		store, err := db.Open(*dbPath)
+		store, err := db.Open(dbPath)
 		if err != nil {
 			return err
 		}

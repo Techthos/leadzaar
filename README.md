@@ -40,6 +40,17 @@ make check        # fmt + tidy + lint + test
 
 `make check` (fmt + tidy + lint + test) mirrors CI and is the gate to run before pushing.
 
+### Database location
+
+Both surfaces resolve the bbolt file the same way, so the TUI and the MCP server share one database
+no matter which directory you start them from:
+
+1. the `-db` flag — `go run . -db /path/to/leadzaar.db`
+2. the `LEADZAAR_DB` environment variable
+3. the default `~/.local/leadzaar/default.db`
+
+The parent directory is created on first run.
+
 ## Project layout
 
 ```
