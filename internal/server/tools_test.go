@@ -488,3 +488,211 @@ func mustJSON(t *testing.T, res *mcp.CallToolResult, v any) {
 		t.Fatalf("unmarshal tool result: %v", err)
 	}
 }
+
+// TestLeadUnavailabilityTools covers the unavailable_until round trip through
+// the MCP surface: recording a block on create, clearing it on update,
+// rejecting a malformed date, and filtering/ordering by availability. The test
+// store runs on the real clock, so the fixtures use dates far enough from today
+// that the assertions can never flip.
+func TestLeadUnavailabilityTools(t *testing.T) {
+	t.Parallel()
+	c, ctx := setup(t)
+
+	const (
+		farFuture  = "2099-03-01"
+		nearFuture = "2099-01-15"
+		longPast   = "2000-01-01"
+	)
+
+	create := func(name, until string) models.Lead {
+		t.Helper()
+		args := map[string]any{"name": name}
+		if until != "" {
+			args["unavailable_until"] = until
+		}
+		res := callTool(t, c, ctx, "create_lead", args)
+		if res.IsError {
+			t.Fatalf("create_lead(%s): %s", name, resultText(t, res))
+		}
+		var l models.Lead
+		mustJSON(t, res, &l)
+		return l
+	}
+
+	away := create("Away", farFuture)
+	soon := create("Soon", nearFuture)
+	expired := create("Expired", longPast)
+	open := create("Open", "")
+
+	if got := away.UnavailableUntil.Format(models.DateLayout); got != farFuture {
+		t.Errorf("create stored %q, want %q", got, farFuture)
+	}
+	if !open.UnavailableUntil.IsZero() {
+		t.Errorf("omitted unavailable_until stored %v, want zero", open.UnavailableUntil)
+	}
+
+	// listLeads decodes the minimal list-item projection the tool returns.
+	type listItem struct {
+		ID               uint64 `json:"id"`
+		UnavailableUntil string `json:"unavailableUntil"`
+	}
+	listLeads := func(args map[string]any) []listItem {
+		t.Helper()
+		res := callTool(t, c, ctx, "list_leads", args)
+		if res.IsError {
+			t.Fatalf("list_leads(%v): %s", args, resultText(t, res))
+		}
+		var page struct {
+			Leads []listItem `json:"leads"`
+		}
+		if err := json.Unmarshal([]byte(resultText(t, res)), &page); err != nil {
+			t.Fatalf("decode list_leads: %v", err)
+		}
+		return page.Leads
+	}
+
+	idsOf := func(items []listItem) []uint64 {
+		out := make([]uint64, len(items))
+		for i, it := range items {
+			out[i] = it.ID
+		}
+		return out
+	}
+	sameSet := func(got, want []uint64) bool {
+		if len(got) != len(want) {
+			return false
+		}
+		seen := make(map[uint64]int, len(got))
+		for _, id := range got {
+			seen[id]++
+		}
+		for _, id := range want {
+			seen[id]--
+		}
+		for _, n := range seen {
+			if n != 0 {
+				return false
+			}
+		}
+		return true
+	}
+
+	t.Run("list item carries the date", func(t *testing.T) {
+		for _, it := range listLeads(map[string]any{}) {
+			if it.ID == away.ID && it.UnavailableUntil != farFuture {
+				t.Errorf("list item unavailableUntil = %q, want %q", it.UnavailableUntil, farFuture)
+			}
+			if it.ID == open.ID && it.UnavailableUntil != "" {
+				t.Errorf("unblocked list item unavailableUntil = %q, want empty", it.UnavailableUntil)
+			}
+		}
+	})
+
+	t.Run("availability filter", func(t *testing.T) {
+		gotAway := idsOf(listLeads(map[string]any{"availability": "unavailable"}))
+		if want := []uint64{away.ID, soon.ID}; !sameSet(gotAway, want) {
+			t.Errorf("unavailable = %v, want %v", gotAway, want)
+		}
+		gotOpen := idsOf(listLeads(map[string]any{"availability": "available"}))
+		if want := []uint64{expired.ID, open.ID}; !sameSet(gotOpen, want) {
+			t.Errorf("available = %v, want %v", gotOpen, want)
+		}
+	})
+
+	t.Run("sort by unavailable-until ascending", func(t *testing.T) {
+		got := idsOf(listLeads(map[string]any{
+			"availability": "unavailable", "sort_by": "unavailable-until", "order": "asc",
+		}))
+		want := []uint64{soon.ID, away.ID}
+		if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+			t.Errorf("order = %v, want %v (soonest return first)", got, want)
+		}
+	})
+
+	t.Run("empty string clears the block", func(t *testing.T) {
+		res := callTool(t, c, ctx, "update_lead", map[string]any{
+			"id": away.ID, "unavailable_until": "",
+		})
+		if res.IsError {
+			t.Fatalf("update_lead: %s", resultText(t, res))
+		}
+		var got models.Lead
+		mustJSON(t, res, &got)
+		if !got.UnavailableUntil.IsZero() {
+			t.Errorf("UnavailableUntil = %v, want zero", got.UnavailableUntil)
+		}
+		// Restore the fixture for any later subtest.
+		callTool(t, c, ctx, "update_lead", map[string]any{"id": away.ID, "unavailable_until": farFuture})
+	})
+
+	t.Run("omitting the field keeps the stored date", func(t *testing.T) {
+		res := callTool(t, c, ctx, "update_lead", map[string]any{"id": soon.ID, "name": "Soon renamed"})
+		if res.IsError {
+			t.Fatalf("update_lead: %s", resultText(t, res))
+		}
+		var got models.Lead
+		mustJSON(t, res, &got)
+		if s := got.UnavailableUntil.Format(models.DateLayout); s != nearFuture {
+			t.Errorf("UnavailableUntil = %q, want %q", s, nearFuture)
+		}
+	})
+
+	t.Run("malformed dates are tool errors", func(t *testing.T) {
+		for _, bad := range []string{"15-08-2099", "next tuesday", "2099-02-30", "2099-01-15T00:00:00Z"} {
+			res := callTool(t, c, ctx, "update_lead", map[string]any{"id": soon.ID, "unavailable_until": bad})
+			if !res.IsError {
+				t.Errorf("update_lead(unavailable_until=%q): expected a tool error", bad)
+			}
+			res = callTool(t, c, ctx, "create_lead", map[string]any{"name": "Bad", "unavailable_until": bad})
+			if !res.IsError {
+				t.Errorf("create_lead(unavailable_until=%q): expected a tool error", bad)
+			}
+		}
+	})
+
+	t.Run("invalid availability filter is a tool error", func(t *testing.T) {
+		if res := callTool(t, c, ctx, "list_leads", map[string]any{"availability": "maybe"}); !res.IsError {
+			t.Error("expected a tool error for availability=maybe")
+		}
+	})
+}
+
+// TestTriagePromptFlagsUnavailableLeads checks that the triage prompt marks a
+// lead that is currently away, so the model defers instead of recommending an
+// immediate contact, and leaves a reachable lead unmarked.
+func TestTriagePromptFlagsUnavailableLeads(t *testing.T) {
+	t.Parallel()
+	c, ctx := setup(t)
+
+	// The test store runs on the real clock, so the fixtures sit far from today.
+	callTool(t, c, ctx, "create_lead", map[string]any{"name": "OnHoliday", "unavailable_until": "2099-03-01"})
+	callTool(t, c, ctx, "create_lead", map[string]any{"name": "Reachable"})
+	callTool(t, c, ctx, "create_lead", map[string]any{"name": "BlockElapsed", "unavailable_until": "2000-01-01"})
+
+	req := mcp.GetPromptRequest{}
+	req.Params.Name = "triage_new_leads"
+	res, err := c.GetPrompt(ctx, req)
+	if err != nil {
+		t.Fatalf("GetPrompt: %v", err)
+	}
+	if len(res.Messages) == 0 {
+		t.Fatal("expected at least one prompt message")
+	}
+	text, ok := mcp.AsTextContent(res.Messages[0].Content)
+	if !ok {
+		t.Fatalf("prompt content is not text: %T", res.Messages[0].Content)
+	}
+
+	for _, want := range []string{"OnHoliday [away until 2099-03-01]", "away until DATE"} {
+		if !strings.Contains(text.Text, want) {
+			t.Errorf("prompt missing %q in:\n%s", want, text.Text)
+		}
+	}
+	// A lead with no block, and one whose block has elapsed, are both reachable
+	// and must not carry the marker.
+	for _, name := range []string{"Reachable", "BlockElapsed"} {
+		if strings.Contains(text.Text, name+" [away") {
+			t.Errorf("%s wrongly marked away in:\n%s", name, text.Text)
+		}
+	}
+}

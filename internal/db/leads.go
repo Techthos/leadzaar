@@ -12,13 +12,14 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
-// errInvalidSource / errInvalidStatus / errInvalidQuality / errInvalidLeadSort
-// are lead validation failures.
+// errInvalidSource / errInvalidStatus / errInvalidQuality / errInvalidLeadSort /
+// errInvalidAvailability are lead validation failures.
 var (
-	errInvalidSource   = errors.New("invalid lead source")
-	errInvalidStatus   = errors.New("invalid lead status")
-	errInvalidQuality  = errors.New("quality must be between 1 and 10 (0 = unscored)")
-	errInvalidLeadSort = errors.New("invalid lead sort field (want created, quality, or updated)")
+	errInvalidSource       = errors.New("invalid lead source")
+	errInvalidStatus       = errors.New("invalid lead status")
+	errInvalidQuality      = errors.New("quality must be between 1 and 10 (0 = unscored)")
+	errInvalidLeadSort     = errors.New("invalid lead sort field (want created, quality, updated, or unavailable-until)")
+	errInvalidAvailability = errors.New("invalid availability filter (want available or unavailable)")
 )
 
 // LeadSort selects the field QueryLeads orders by. An empty value defaults to
@@ -26,15 +27,35 @@ var (
 type LeadSort string
 
 const (
-	LeadSortCreated LeadSort = "created" // by ID (creation order)
-	LeadSortQuality LeadSort = "quality" // by Quality score, ties broken by ID
-	LeadSortUpdated LeadSort = "updated" // by UpdatedAt, ties broken by ID
+	LeadSortCreated          LeadSort = "created"           // by ID (creation order)
+	LeadSortQuality          LeadSort = "quality"           // by Quality score, ties broken by ID
+	LeadSortUpdated          LeadSort = "updated"           // by UpdatedAt, ties broken by ID
+	LeadSortUnavailableUntil LeadSort = "unavailable-until" // by UnavailableUntil, ties broken by ID
 )
 
 // Valid reports whether o is a recognized sort field.
 func (o LeadSort) Valid() bool {
 	switch o {
-	case LeadSortCreated, LeadSortQuality, LeadSortUpdated:
+	case LeadSortCreated, LeadSortQuality, LeadSortUpdated, LeadSortUnavailableUntil:
+		return true
+	default:
+		return false
+	}
+}
+
+// LeadAvailability filters QueryLeads by whether a lead is reachable right now,
+// per models.Lead.Available. An empty value means "no availability filter".
+type LeadAvailability string
+
+const (
+	LeadAvailable   LeadAvailability = "available"   // no block recorded, or it has elapsed
+	LeadUnavailable LeadAvailability = "unavailable" // UnavailableUntil is still in the future
+)
+
+// Valid reports whether a is a recognized availability filter.
+func (a LeadAvailability) Valid() bool {
+	switch a {
+	case LeadAvailable, LeadUnavailable:
 		return true
 	default:
 		return false
@@ -48,17 +69,19 @@ const (
 )
 
 // LeadQuery parameterizes QueryLeads (UC-2): an optional status filter, an
-// optional case-insensitive substring Search over name/company/email/tags, a
-// sort field + direction, and 1-based pagination. Zero values mean "no
-// filter"; Page < 1 becomes 1, PageSize is clamped to [1, maxLeadPageSize]
-// (0 takes the default), and SortBy "" defaults to last-updated order.
+// optional availability filter, an optional case-insensitive substring Search
+// over name/company/email/tags, a sort field + direction, and 1-based
+// pagination. Zero values mean "no filter" and criteria compose with AND;
+// Page < 1 becomes 1, PageSize is clamped to [1, maxLeadPageSize] (0 takes the
+// default), and SortBy "" defaults to last-updated order.
 type LeadQuery struct {
-	Status   models.LeadStatus
-	Search   string
-	SortBy   LeadSort
-	Asc      bool // false (zero value) = descending: newest/highest first, the default
-	Page     int
-	PageSize int
+	Status       models.LeadStatus
+	Availability LeadAvailability // evaluated against the Store clock at query time
+	Search       string
+	SortBy       LeadSort
+	Asc          bool // false (zero value) = descending: newest/highest first, the default
+	Page         int
+	PageSize     int
 }
 
 // LeadPage is one page of QueryLeads results plus the pagination metadata an
@@ -86,6 +109,7 @@ func (s *Store) CreateLead(l models.Lead) (models.Lead, error) {
 	if err := validateLeadEnums(l); err != nil {
 		return models.Lead{}, fmt.Errorf("create lead: %w", err)
 	}
+	l.UnavailableUntil = models.TruncateDate(l.UnavailableUntil)
 	now := s.now()
 	l.CreatedAt = now
 	l.UpdatedAt = now
@@ -154,18 +178,22 @@ func (s *Store) ListLeads(status models.LeadStatus) ([]models.Lead, error) {
 }
 
 // QueryLeads is the flexible, paginated lead listing behind the list_leads MCP
-// tool (UC-2). It filters by status and/or a case-insensitive substring Search
-// over name, linked company name, email, and tags; orders the full matching set
-// by q.SortBy (default last-updated, q.Asc to reverse); then returns a single
-// page sized per q.PageSize (clamped to [1, maxLeadPageSize]) along with the
-// totals needed to page through the rest. Like the rest of v1, this is a full
-// primary-bucket scan with in-memory filter/sort — no status or quality index.
+// tool (UC-2). It filters by status, by current availability, and/or a
+// case-insensitive substring Search over name, linked company name, email, and
+// tags; orders the full matching set by q.SortBy (default last-updated, q.Asc to
+// reverse); then returns a single page sized per q.PageSize (clamped to
+// [1, maxLeadPageSize]) along with the totals needed to page through the rest.
+// Like the rest of v1, this is a full primary-bucket scan with in-memory
+// filter/sort — no status, quality, or availability index.
 func (s *Store) QueryLeads(q LeadQuery) (LeadPage, error) {
 	if q.Status != "" && !q.Status.Valid() {
 		return LeadPage{}, fmt.Errorf("query leads: %w", errInvalidStatus)
 	}
 	if q.SortBy != "" && !q.SortBy.Valid() {
 		return LeadPage{}, fmt.Errorf("query leads: %w", errInvalidLeadSort)
+	}
+	if q.Availability != "" && !q.Availability.Valid() {
+		return LeadPage{}, fmt.Errorf("query leads: %w", errInvalidAvailability)
 	}
 
 	page := q.Page
@@ -184,6 +212,9 @@ func (s *Store) QueryLeads(q LeadQuery) (LeadPage, error) {
 		sortBy = LeadSortUpdated
 	}
 	search := strings.ToLower(strings.TrimSpace(q.Search))
+	// Snapshot the clock once so every lead in this page is judged against the
+	// same instant — a scan straddling midnight must not split a date boundary.
+	now := s.now()
 
 	var matched []models.Lead
 	err := s.view(func(tx *bolt.Tx) error {
@@ -197,6 +228,9 @@ func (s *Store) QueryLeads(q LeadQuery) (LeadPage, error) {
 				return err
 			}
 			if q.Status != "" && l.Status != q.Status {
+				return nil
+			}
+			if q.Availability != "" && l.Available(now) != (q.Availability == LeadAvailable) {
 				return nil
 			}
 			if search != "" && !leadMatches(l, names[l.CompanyID], search) {
@@ -254,6 +288,20 @@ func sortLeads(leads []models.Lead, by LeadSort, asc bool) {
 			} else {
 				less = a.ID < b.ID
 			}
+		case LeadSortUnavailableUntil:
+			// An unset UnavailableUntil sorts as "infinitely far away" rather than
+			// as the zero instant, so ascending order ("who frees up soonest")
+			// leads with real return dates and sinks the unblocked leads — which
+			// have no return date to wait for — to the end. Descending flips that.
+			au, bu := a.UnavailableUntil, b.UnavailableUntil
+			switch {
+			case au.IsZero() != bu.IsZero():
+				less = bu.IsZero()
+			case !au.Equal(bu):
+				less = au.Before(bu)
+			default:
+				less = a.ID < b.ID
+			}
 		default: // LeadSortCreated
 			less = a.ID < b.ID
 		}
@@ -295,6 +343,7 @@ func (s *Store) UpdateLead(l models.Lead) (models.Lead, error) {
 	if err := validateLeadEnums(l); err != nil {
 		return models.Lead{}, fmt.Errorf("update lead: %w", err)
 	}
+	l.UnavailableUntil = models.TruncateDate(l.UnavailableUntil)
 	err := s.update(func(tx *bolt.Tx) error {
 		if err := checkCompanyRef(tx, l.CompanyID); err != nil {
 			return err

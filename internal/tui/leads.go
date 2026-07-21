@@ -81,6 +81,7 @@ func (t *tui) showLeadForm(existing *models.Lead) {
 	f.numInput("Quality", qualityField(l.Quality), acceptInt, qualityValidator)
 	f.dropdown("Source", sources, indexOf(sources, string(l.Source)))
 	f.dropdown("Status", statuses, indexOf(statuses, string(l.Status)))
+	f.input("Away until", models.FormatDate(l.UnavailableUntil), dateValidator)
 	f.input("Notes", l.Notes, nil)
 	f.onSave(func(v map[string]string) {
 		base := l
@@ -92,6 +93,8 @@ func (t *tui) showLeadForm(existing *models.Lead) {
 		base.Quality = int(parseUint(v["Quality"]))
 		base.Source = models.Source(v["Source"])
 		base.Status = models.LeadStatus(v["Status"])
+		// Safe to drop the error: dateValidator already blocked save on bad input.
+		base.UnavailableUntil, _ = models.ParseDate(v["Away until"])
 		base.Notes = v["Notes"]
 		t.mutate(func() error {
 			if base.ID == 0 {

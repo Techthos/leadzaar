@@ -79,10 +79,25 @@ linked back to it by `LeadID`.
 | `Source`    | string enum | `web` \| `referral` \| `event` \| `cold-outreach` \| `other`    |
 | `Status`    | string enum | `new` \| `contacted` \| `contacted-first-touch` \| `contacted-followup-1` \| `contacted-followup-2` \| `contacted-followup-3` \| `qualified` \| `converted` \| `lost` (granular `contacted-*` states sit between the legacy `contacted` and `qualified`) |
 | `Notes`     | string      | freeform, multi-line                                             |
+| `UnavailableUntil` | time.Time | optional **date-only** block (stored midnight UTC, zero = none); the lead is unreachable until it, **exclusive** — see below |
 | `ContactID` | uint64      | `0` until converted; set to the Contact created on conversion    |
 | `DealID`    | uint64      | `0` unless a Deal was created during conversion                  |
 | `CreatedAt` | time.Time   | RFC3339                                                          |
 | `UpdatedAt` | time.Time   | RFC3339                                                          |
+
+**Lead availability.** `UnavailableUntil` records a date a lead is known to be unreachable until —
+typically transcribed from an out-of-office autoresponder ("away until the 15th") — so a follow-up
+or an Offer can be held back instead of wasted. It is:
+
+- **Date-only.** Surfaces exchange `YYYY-MM-DD`; the repository normalizes any supplied instant to
+  midnight UTC on its own calendar date, so one date is always one instant.
+- **Exclusive.** A lead is available again *from* that date: "away until the 15th" is reachable on
+  the 15th. A lead is *available* when `UnavailableUntil` is zero or not after now — an elapsed
+  block is indistinguishable from none, so the field never needs manual clearing.
+- **Independent of `Status`.** An unavailable lead keeps its funnel position; availability is a
+  timing signal, not a stage. There is no `unavailable` status, and no notification or scheduling
+  behavior is implied — the operator or agent queries for it (nothing in the local-only envelope
+  fires on a date).
 
 **Contact** — a known person you are actively dealing with.
 | field          | type      | notes                                                       |
@@ -254,6 +269,8 @@ as a plain string is upgraded to a `CompanyID` reference by an idempotent startu
 - `Offer.LeadID` must reference an existing Lead (checked before write).
 - `Lead.Source`, `Lead.Status`, `Deal.Stage` must be one of their enum values.
 - `Lead.Quality`, when set, is an integer `1`–`10` (`0` means unscored).
+- `Lead.UnavailableUntil` is normalized to midnight UTC on write (never rejected — a past date is a
+  legitimate elapsed block). Surfaces reject a value that is not a `YYYY-MM-DD` calendar date.
 - `Deal.ContactID` must reference an existing Contact (checked before write).
 - A non-zero `CompanyID` on a Lead, Contact, or Deal must reference an existing Company (checked
   before write).
@@ -266,12 +283,19 @@ MCP, or both — all are available on both surfaces unless noted).
 
 ### Leads
 1. **Create lead** — insert a `Lead` (`Status` defaults to `new`). Repo: `leads.Put`. Surfaces: both.
-2. **List leads** — list leads with optional `Status` filter, substring search, sort
-   (`updated` default / `created` / `quality`), and pagination. The MCP `list_leads` tool returns
-   **minimal items** (no `Notes`) ordered last-updated-first. Repo: scan `leads`. Surfaces: both.
+2. **List leads** — list leads with optional `Status` filter, optional **availability** filter
+   (`available` / `unavailable`, evaluated against the clock at query time), substring search, sort
+   (`updated` default / `created` / `quality` / `unavailable-until`), and pagination. Filters compose
+   with AND. Ordering by `unavailable-until` sorts an unset date **last when ascending** (an unset
+   date means "nothing to wait for", not the zero instant), so ascending answers "who frees up
+   soonest". The MCP `list_leads` tool returns **minimal items** (no `Notes`, but **including**
+   `unavailableUntil`, since it drives the contact-now decision the list exists to answer) ordered
+   last-updated-first. Repo: scan `leads`. Surfaces: both.
 3. **Get lead** — fetch by ID. Repo: `leads.Get`. Surfaces: both.
-4. **Update lead** — edit fields / advance `Status`. Repo: `leads.Put` (+ email index if Lead email
-   were indexed — leads are not email-indexed in v1, so no index work). Surfaces: both.
+4. **Update lead** — edit fields / advance `Status`. This is where an out-of-office reply is
+   recorded: set `UnavailableUntil` to the date the autoresponder names, or clear it to unblock the
+   lead early. Repo: `leads.Put` (+ email index if Lead email were indexed — leads are not
+   email-indexed in v1, so no index work). Surfaces: both.
 5. **Convert lead** — `convert(leadID, makeDeal, dealTitle?, dealValue?, dealCurrency?)`: create a
    Contact from the lead's fields (`SourceLeadID = leadID`); if `makeDeal`, create a Deal for that
    contact; set `lead.ContactID` (+`DealID`) and `lead.Status = converted`. All in one `Update`.
@@ -352,6 +376,8 @@ record carries an optional `CompanyID`, validated to reference an existing Compa
 ### As the operator using the TUI
 - I want to add a lead the moment it comes in, so I don't lose it (UC-1).
 - I want to see my leads filtered by status, so I know who to chase next (UC-2).
+- I want to record the return date from a lead's out-of-office autoresponder, so I can see at a
+  glance who is away and stop chasing someone who is on holiday (UC-2, UC-4).
 - I want to convert a promising lead into a contact (and optionally start a deal) in one action, so
   qualifying is one keystroke, not re-typing (UC-5).
 - I want to browse and edit my contacts, so their details stay current (UC-8, UC-10).
@@ -366,6 +392,8 @@ record carries an optional `CompanyID`, validated to reference an existing Compa
   CRM on the user's behalf (UC-1…17).
 - I want to convert a lead through a single tool call, so I can qualify prospects the user flags
   (UC-5).
+- I want to write an autoresponder's return date onto a lead and later list only the leads that are
+  contactable today, so I follow up or send an offer when it will actually be read (UC-2, UC-4).
 - I want to read any record by URI resource, so I can pull context without a tool round-trip
   (UC-3/9/15).
 - I want a pipeline summary, so I can report funnel health to the user (UC-18).
@@ -383,10 +411,10 @@ to **stderr** only (stdout is the protocol channel). User/input errors →
 
 | tool              | purpose                              | input (key fields)                                                                 | output                                  |
 |-------------------|--------------------------------------|------------------------------------------------------------------------------------|-----------------------------------------|
-| `create_lead`     | UC-1 add a lead                      | name (req), company_id?, email, phone, tags[], quality?, source, notes             | created Lead                            |
-| `list_leads`      | UC-2 list/search/sort/paginate leads | status?, query? (name/company/email/tag substring), sort_by? (updated default/created/quality), order? (desc/asc), page?, page_size? (≤50) | { leads: MinimalLead[], page, page_size, total, total_pages, has_more } |
+| `create_lead`     | UC-1 add a lead                      | name (req), company_id?, email, phone, tags[], quality?, source, notes, unavailable_until? (`YYYY-MM-DD`) | created Lead                            |
+| `list_leads`      | UC-2 list/search/sort/paginate leads | status?, availability? (available/unavailable), query? (name/company/email/tag substring), sort_by? (updated default/created/quality/unavailable-until), order? (desc/asc), page?, page_size? (≤50) | { leads: MinimalLead[], page, page_size, total, total_pages, has_more } |
 | `get_lead`        | UC-3 fetch a lead                    | id (req)                                                                            | Lead                                    |
-| `update_lead`     | UC-4 edit/advance a lead             | id (req) + any editable fields incl. status, company_id, quality                   | updated Lead                            |
+| `update_lead`     | UC-4 edit/advance a lead             | id (req) + any editable fields incl. status, company_id, quality, unavailable_until (`YYYY-MM-DD`; `""` clears) | updated Lead                            |
 | `convert_lead`    | UC-5 convert to contact (+deal)      | id (req), make_deal (bool), deal_title?, deal_value?, deal_currency?               | { contact, deal? , lead }               |
 | `delete_lead`     | UC-6 delete a lead (cascade offers)  | id (req)                                                                            | { deleted, deleted_offer_ids[] }        |
 | `create_contact`  | UC-7 add a contact                   | name (req), company_id?, email, phone, tags[], notes                               | created Contact                         |
@@ -423,7 +451,8 @@ responses small; the complete record (including that text) is fetched with `get_
 `crm://.../{id}` resource. Per entity the omitted fields are:
 
 - **MinimalLead** — drops `notes` (keeps id, name, companyId, email, phone, tags, quality, source,
-  status, contactId, dealId, timestamps).
+  status, `unavailableUntil` as a `YYYY-MM-DD` string omitted when unset, contactId, dealId,
+  timestamps).
 - **MinimalContact** — drops `notes` (keeps id, name, companyId, email, phone, tags, sourceLeadId,
   timestamps).
 - **MinimalDeal** — drops `notes` (keeps id, title, contactId, companyId, value, currency, stage,
@@ -448,7 +477,7 @@ responses small; the complete record (including that text) is fetched with `get_
 
 | prompt             | purpose                                                                                |
 |--------------------|----------------------------------------------------------------------------------------|
-| `triage_new_leads` | guide the assistant to review `new`/`contacted` leads and suggest next status/action.  |
+| `triage_new_leads` | guide the assistant to review `new`/`contacted` leads and suggest next status/action. A currently-unavailable lead is tagged `[away until DATE]` with an instruction to defer rather than contact it. |
 | `draft_followup`   | given a contact (and optionally a deal), draft a follow-up message. Args: contact_id, deal_id? |
 
 ## TUI Surface
@@ -489,7 +518,10 @@ mutations come back via `QueueUpdateDraw`.
    and lead counts by status (UC-18). The landing section.
 2. **Leads** — master-detail of leads; `n` new, `e`/Enter edit, `c` **convert** (form: make-deal?
    title/value/currency), `o` **new offer** for the selected lead (opens the offer form pre-filled
-   with its Lead ID), `d` delete (UC-1,2,4,5,6,24). The detail pane lists the lead's offers.
+   with its Lead ID), `d` delete (UC-1,2,4,5,6,24). The detail pane lists the lead's offers. An
+   **Away** column flags a lead that is currently unavailable, in `[yellow]` and relative
+   (`today`, `in 12d`); an unset or elapsed block renders as the dim em-dash, since both mean
+   "contactable now". The detail pane shows the absolute date, marking an elapsed one `(elapsed)`.
 3. **Contacts** — master-detail of contacts; `n` new, `e`/Enter edit, `d` delete (cascade, with a
    confirm modal naming the affected deals). The detail pane lists the contact's deals
    (UC-7,8,10,11,12).
@@ -523,7 +555,9 @@ Create/edit forms are full-screen in the body, one field per row, reused for cre
 pre-fills). The Lead, Contact, and Deal forms link a Company through a **dropdown picker** (first
 option `— none —`, mapping to no link); Lead and Contact forms edit **Tags** as a single
 comma-separated field, and the Lead form has a **Quality** field (blank, or an integer `1`–`10`,
-live-validated). Validation is **live and per-field** — an inline `[red]` error appears beneath
+live-validated) and an **Away until** field (blank, or a `YYYY-MM-DD` date, live-validated) that
+sets `UnavailableUntil` — blanking it clears the block. Validation is **live and per-field** — an
+inline `[red]` error appears beneath
 an offending field and `Ctrl-S` is blocked while any field is invalid (it focuses the first
 offender).
 `Esc` cancels, prompting `Discard changes? [y/N]` when the form is dirty. Destructive actions confirm
@@ -544,15 +578,26 @@ selection is guarded. Below 80×24 the UI shows a centered "Terminal too small" 
 - **UC-2 List leads:** by default leads are returned **most-recently-updated first** (`sort_by`
   defaults to `updated`), and the `list_leads` items are **minimal** (no `notes`); filtering by a
   status returns exactly the leads in that status; a `query` substring matches case-insensitively on
-  name/company/email/tag; `sort_by` (`updated` default/`created`/`quality`) with `order` (`desc`
-  default, `asc`) reorders the full filtered set with ID as a stable tiebreaker; results are
-  paginated 1-based with `page_size` clamped to `[1, 50]` (default 50), and the response reports
-  `total`, `total_pages`, and `has_more` for the full filtered set. An invalid status or `sort_by` is
-  rejected.
+  name/company/email/tag; `sort_by` (`updated` default/`created`/`quality`/`unavailable-until`) with
+  `order` (`desc` default, `asc`) reorders the full filtered set with ID as a stable tiebreaker;
+  results are paginated 1-based with `page_size` clamped to `[1, 50]` (default 50), and the response
+  reports `total`, `total_pages`, and `has_more` for the full filtered set. An invalid status or
+  `sort_by` is rejected.
+- **UC-2 Lead availability filter:** `availability=unavailable` returns exactly the leads whose
+  `UnavailableUntil` is still in the future; `availability=available` returns the rest — those with
+  no block **and** those whose block has elapsed. The boundary is exclusive: a lead whose block ends
+  at the start of today is **available**. Filters compose with status and `query` via AND. Sorting by
+  `unavailable-until` ascending returns dated blocks soonest-first with unset dates **last**;
+  descending reverses it. An invalid `availability` value is rejected. Every lead in one page is
+  judged against a single clock reading, so a scan cannot straddle a date boundary.
 - **UC-3 Get lead:** a known ID returns the lead; an unknown ID returns a clean not-found (no panic).
 - **UC-4 Update lead:** a **partial update** — only supplied fields change; any field the caller
   omits keeps its stored value (an explicit empty value clears it). Edited fields persist,
   `UpdatedAt` advances, ID and `CreatedAt` are unchanged; an invalid status value is rejected.
+  `unavailable_until` follows the same rule: omitted keeps the stored date, `""` clears the block,
+  and a value that is not a `YYYY-MM-DD` calendar date (wrong order, prose, an impossible day, or a
+  full timestamp) is rejected as a tool error on both `create_lead` and `update_lead`. A stored date
+  is normalized to midnight UTC, so any time-of-day supplied through the Go API is dropped.
 - **UC-5 Convert lead:** converting a non-converted lead creates a Contact whose fields mirror the
   lead and whose `SourceLeadID` is the lead; with `make_deal` it also creates a Deal for that contact
   with the given value/currency; the lead becomes `converted` with `ContactID` (and `DealID`) set;

@@ -31,6 +31,7 @@ var (
 		{"Status", false},
 		{"Qual", true},
 		{"Source", false},
+		{"Away", false},
 		{"Updated", false},
 	}
 	contactCols = []col{
@@ -81,7 +82,8 @@ func (t *tui) companyName(id uint64) string {
 func leadCells(l models.Lead, companyName func(uint64) string) []string {
 	return []string{
 		strconv.FormatUint(l.ID, 10), dash(l.Name), dash(companyName(l.CompanyID)),
-		dash(l.Email), string(l.Status), qualityText(l.Quality), dashSource(l.Source), relTime(l.UpdatedAt),
+		dash(l.Email), string(l.Status), qualityText(l.Quality), dashSource(l.Source),
+		awayText(l.UnavailableUntil), relTime(l.UpdatedAt),
 	}
 }
 
@@ -126,6 +128,7 @@ func leadDetail(l models.Lead, companyName func(uint64) string, offers []models.
 	field(&b, "Quality", qualityField(l.Quality))
 	field(&b, "Source", string(l.Source))
 	field(&b, "Status", string(l.Status))
+	field(&b, "Away until", unavailableField(l.UnavailableUntil))
 	field(&b, "Notes", l.Notes)
 	if l.Status == models.StatusConverted {
 		field(&b, "Contact ID", uintField(l.ContactID))
@@ -272,6 +275,40 @@ func qualityField(q int) string {
 		return ""
 	}
 	return strconv.Itoa(q)
+}
+
+// awayText renders a lead's unavailability for a list cell. Per the design
+// language, lists carry relative time — an active block reads "in 12d" and is
+// marked [yellow] as an attention state. A block that has elapsed is no block at
+// all, so it dims to an em-dash exactly like an unset one.
+func awayText(until time.Time) string {
+	return awaySince(time.Until(until), until.IsZero())
+}
+
+// awaySince is the pure, testable core of awayText: d is the time remaining on
+// the block and unset reports whether no block was recorded at all.
+func awaySince(d time.Duration, unset bool) string {
+	if unset || d <= 0 {
+		return "[gray]—[-]"
+	}
+	if d < 24*time.Hour {
+		return "[yellow]today[-]"
+	}
+	return fmt.Sprintf("[yellow]in %dd[-]", int(d.Hours()/24))
+}
+
+// unavailableField renders an unavailability date for the detail pane, where
+// the design language calls for absolute values. An elapsed block is still
+// shown (it is real history the operator may want) but annotated as expired.
+func unavailableField(until time.Time) string {
+	if until.IsZero() {
+		return ""
+	}
+	s := models.FormatDate(until)
+	if !time.Now().Before(until) {
+		return s + " [gray](elapsed)[-]"
+	}
+	return s
 }
 
 // formatMoney renders a monetary value with two decimals.

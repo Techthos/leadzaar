@@ -2,6 +2,7 @@ package db_test
 
 import (
 	"errors"
+	"sort"
 	"testing"
 	"time"
 
@@ -296,4 +297,148 @@ func TestDeleteLead(t *testing.T) {
 	if _, err := store.DeleteLead(99999); !errors.Is(err, db.ErrNotFound) {
 		t.Errorf("delete unknown: err = %v, want ErrNotFound", err)
 	}
+}
+
+func TestLeadUnavailability(t *testing.T) {
+	t.Parallel()
+	// The injected clock reads 2026-06-13 09:00 UTC throughout this test, so
+	// every availability assertion below is deterministic.
+	clk := newClock()
+	store := openTestStore(t, clk)
+	now := clk.now()
+
+	date := func(y int, m time.Month, d int) time.Time {
+		return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
+	}
+
+	// away is blocked well into the future; backToday's block expires at the
+	// start of today (exclusive, so it is reachable again); expired's block is in
+	// the past; open never had one.
+	away, _ := store.CreateLead(models.Lead{Name: "Away", UnavailableUntil: date(2026, 6, 30)})
+	soon, _ := store.CreateLead(models.Lead{Name: "Soon", UnavailableUntil: date(2026, 6, 20)})
+	backToday, _ := store.CreateLead(models.Lead{Name: "Back today", UnavailableUntil: date(2026, 6, 13)})
+	expired, _ := store.CreateLead(models.Lead{Name: "Expired", UnavailableUntil: date(2026, 6, 1)})
+	open, _ := store.CreateLead(models.Lead{Name: "Open"})
+
+	ids := func(p db.LeadPage) []uint64 {
+		out := make([]uint64, len(p.Leads))
+		for i, l := range p.Leads {
+			out[i] = l.ID
+		}
+		return out
+	}
+
+	t.Run("stored date is normalized to midnight UTC", func(t *testing.T) {
+		// A caller may hand in any instant; the store keeps one canonical
+		// instant per calendar date so equality and sorting stay well-defined.
+		got, err := store.CreateLead(models.Lead{
+			Name:             "Sloppy",
+			UnavailableUntil: time.Date(2026, 7, 4, 17, 45, 3, 0, time.UTC),
+		})
+		if err != nil {
+			t.Fatalf("CreateLead: %v", err)
+		}
+		if want := date(2026, 7, 4); !got.UnavailableUntil.Equal(want) {
+			t.Errorf("UnavailableUntil = %v, want %v", got.UnavailableUntil, want)
+		}
+		if _, err := store.DeleteLead(got.ID); err != nil {
+			t.Fatalf("DeleteLead: %v", err)
+		}
+	})
+
+	t.Run("Available is exclusive on the until date", func(t *testing.T) {
+		cases := []struct {
+			name string
+			lead models.Lead
+			want bool
+		}{
+			{"future block", away, false},
+			{"block ends today", backToday, true},
+			{"block elapsed", expired, true},
+			{"no block", open, true},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				if got := tc.lead.Available(now); got != tc.want {
+					t.Errorf("Available(%v) = %v, want %v", now, got, tc.want)
+				}
+			})
+		}
+	})
+
+	t.Run("availability filter", func(t *testing.T) {
+		gotAway, err := store.QueryLeads(db.LeadQuery{Availability: db.LeadUnavailable})
+		if err != nil {
+			t.Fatalf("QueryLeads: %v", err)
+		}
+		if want := []uint64{soon.ID, away.ID}; !equalIDs(sortedIDs(ids(gotAway)), sortedIDs(want)) {
+			t.Errorf("unavailable = %v, want %v", ids(gotAway), want)
+		}
+
+		gotOpen, err := store.QueryLeads(db.LeadQuery{Availability: db.LeadAvailable})
+		if err != nil {
+			t.Fatalf("QueryLeads: %v", err)
+		}
+		want := []uint64{backToday.ID, expired.ID, open.ID}
+		if !equalIDs(sortedIDs(ids(gotOpen)), sortedIDs(want)) {
+			t.Errorf("available = %v, want %v", ids(gotOpen), want)
+		}
+	})
+
+	t.Run("invalid availability rejected", func(t *testing.T) {
+		if _, err := store.QueryLeads(db.LeadQuery{Availability: db.LeadAvailability("maybe")}); err == nil {
+			t.Fatal("expected error, got nil")
+		}
+	})
+
+	t.Run("ascending sort leads with soonest return, unblocked last", func(t *testing.T) {
+		got, err := store.QueryLeads(db.LeadQuery{SortBy: db.LeadSortUnavailableUntil, Asc: true})
+		if err != nil {
+			t.Fatalf("QueryLeads: %v", err)
+		}
+		// Dated blocks ascend by date; the lead with no block sorts last because
+		// an unset date means "nothing to wait for", not "the zero instant".
+		want := []uint64{expired.ID, backToday.ID, soon.ID, away.ID, open.ID}
+		if !equalIDs(ids(got), want) {
+			t.Errorf("order = %v, want %v", ids(got), want)
+		}
+	})
+
+	t.Run("descending sort reverses, unblocked first", func(t *testing.T) {
+		got, err := store.QueryLeads(db.LeadQuery{SortBy: db.LeadSortUnavailableUntil})
+		if err != nil {
+			t.Fatalf("QueryLeads: %v", err)
+		}
+		want := []uint64{open.ID, away.ID, soon.ID, backToday.ID, expired.ID}
+		if !equalIDs(ids(got), want) {
+			t.Errorf("order = %v, want %v", ids(got), want)
+		}
+	})
+
+	t.Run("update clears a block", func(t *testing.T) {
+		cleared := away
+		cleared.UnavailableUntil = time.Time{}
+		got, err := store.UpdateLead(cleared)
+		if err != nil {
+			t.Fatalf("UpdateLead: %v", err)
+		}
+		if !got.UnavailableUntil.IsZero() {
+			t.Errorf("UnavailableUntil = %v, want zero", got.UnavailableUntil)
+		}
+		if !got.Available(now) {
+			t.Error("lead still unavailable after clearing the block")
+		}
+		// Restore so sibling subtests keep their fixture.
+		if _, err := store.UpdateLead(away); err != nil {
+			t.Fatalf("UpdateLead restore: %v", err)
+		}
+	})
+}
+
+// sortedIDs returns ids in ascending order so set-equality assertions do not
+// depend on the query's ordering.
+func sortedIDs(ids []uint64) []uint64 {
+	out := append([]uint64(nil), ids...)
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
 }

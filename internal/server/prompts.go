@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -40,9 +41,11 @@ func (h *handlers) triageNewLeads(_ context.Context, _ mcp.GetPromptRequest) (*m
 		return nil, err
 	}
 	var b strings.Builder
-	b.WriteString("Triage these open leads. For each, recommend the next status (contacted/qualified/lost) and a concrete next action.\n\n")
-	writeLeadLines(&b, "NEW", newLeads, names)
-	writeLeadLines(&b, "CONTACTED", contacted, names)
+	b.WriteString("Triage these open leads. For each, recommend the next status (contacted/qualified/lost) and a concrete next action.\n")
+	b.WriteString("A lead marked [away until DATE] has an out-of-office block: do not propose contacting them before that date — defer the action instead.\n\n")
+	now := time.Now()
+	writeLeadLines(&b, "NEW", newLeads, names, now)
+	writeLeadLines(&b, "CONTACTED", contacted, names, now)
 	if len(newLeads)+len(contacted) == 0 {
 		b.WriteString("(No open leads to triage.)\n")
 	}
@@ -98,8 +101,10 @@ func (h *handlers) draftFollowup(_ context.Context, req mcp.GetPromptRequest) (*
 }
 
 // writeLeadLines appends a labelled block of "#id name (company)" lines. The
-// company name is resolved from names by the lead's CompanyID.
-func writeLeadLines(b *strings.Builder, label string, leads []models.Lead, names map[uint64]string) {
+// company name is resolved from names by the lead's CompanyID. A lead that is
+// unavailable at now is tagged "[away until DATE]" so the model does not
+// recommend contacting someone whose autoresponder says they are out.
+func writeLeadLines(b *strings.Builder, label string, leads []models.Lead, names map[uint64]string, now time.Time) {
 	if len(leads) == 0 {
 		return
 	}
@@ -108,6 +113,9 @@ func writeLeadLines(b *strings.Builder, label string, leads []models.Lead, names
 		fmt.Fprintf(b, "  #%d %s", l.ID, l.Name)
 		if name := names[l.CompanyID]; name != "" {
 			fmt.Fprintf(b, " (%s)", name)
+		}
+		if !l.Available(now) {
+			fmt.Fprintf(b, " [away until %s]", models.FormatDate(l.UnavailableUntil))
 		}
 		b.WriteString("\n")
 	}

@@ -12,27 +12,32 @@ import (
 // need the complete record use the matching get_* tool or crm://.../{id} resource.
 // JSON tags match the model fields so shapes stay consistent.
 
+// UnavailableUntil is kept in the lead projection (unlike the dropped freeform
+// fields) because it drives the "can I contact this lead yet?" decision the list
+// exists to answer — omitting it would force a get_lead per row.
 type leadListItem struct {
-	ID        uint64            `json:"id"`
-	Name      string            `json:"name"`
-	CompanyID uint64            `json:"companyId,omitempty"`
-	Email     string            `json:"email,omitempty"`
-	Phone     string            `json:"phone,omitempty"`
-	Tags      []string          `json:"tags,omitempty"`
-	Quality   int               `json:"quality,omitempty"`
-	Source    models.Source     `json:"source,omitempty"`
-	Status    models.LeadStatus `json:"status"`
-	ContactID uint64            `json:"contactId,omitempty"`
-	DealID    uint64            `json:"dealId,omitempty"`
-	CreatedAt time.Time         `json:"createdAt"`
-	UpdatedAt time.Time         `json:"updatedAt"`
+	ID               uint64            `json:"id"`
+	Name             string            `json:"name"`
+	CompanyID        uint64            `json:"companyId,omitempty"`
+	Email            string            `json:"email,omitempty"`
+	Phone            string            `json:"phone,omitempty"`
+	Tags             []string          `json:"tags,omitempty"`
+	Quality          int               `json:"quality,omitempty"`
+	Source           models.Source     `json:"source,omitempty"`
+	Status           models.LeadStatus `json:"status"`
+	UnavailableUntil string            `json:"unavailableUntil,omitempty"` // YYYY-MM-DD; "" = no known block
+	ContactID        uint64            `json:"contactId,omitempty"`
+	DealID           uint64            `json:"dealId,omitempty"`
+	CreatedAt        time.Time         `json:"createdAt"`
+	UpdatedAt        time.Time         `json:"updatedAt"`
 }
 
 func toLeadListItem(l models.Lead) leadListItem {
 	return leadListItem{
 		ID: l.ID, Name: l.Name, CompanyID: l.CompanyID, Email: l.Email, Phone: l.Phone,
 		Tags: l.Tags, Quality: l.Quality, Source: l.Source, Status: l.Status,
-		ContactID: l.ContactID, DealID: l.DealID, CreatedAt: l.CreatedAt, UpdatedAt: l.UpdatedAt,
+		UnavailableUntil: models.FormatDate(l.UnavailableUntil),
+		ContactID:        l.ContactID, DealID: l.DealID, CreatedAt: l.CreatedAt, UpdatedAt: l.UpdatedAt,
 	}
 }
 

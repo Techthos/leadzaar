@@ -224,6 +224,15 @@ func required(field string) func(string) string {
 	}
 }
 
+// dateValidator accepts a blank value (no date set) or a YYYY-MM-DD calendar
+// date, matching the wire format of the date-only model fields.
+func dateValidator(v string) string {
+	if _, err := models.ParseDate(v); err != nil {
+		return "Use YYYY-MM-DD (or leave blank)"
+	}
+	return ""
+}
+
 // qualityValidator accepts a blank value (unscored) or an integer in 1–10.
 func qualityValidator(v string) string {
 	s := strings.TrimSpace(v)

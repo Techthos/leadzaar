@@ -82,11 +82,66 @@ func TestRelSince(t *testing.T) {
 	}
 }
 
+func TestAwaySince(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		in    time.Duration
+		unset bool
+		want  string
+	}{
+		{name: "no block recorded", unset: true, want: "[gray]—[-]"},
+		// An elapsed block is no block at all, so it reads like an unset one.
+		{name: "block elapsed", in: -3 * time.Hour, want: "[gray]—[-]"},
+		{name: "block ends this instant", in: 0, want: "[gray]—[-]"},
+		{name: "back later today", in: 5 * time.Hour, want: "[yellow]today[-]"},
+		{name: "back tomorrow", in: 30 * time.Hour, want: "[yellow]in 1d[-]"},
+		{name: "back in two weeks", in: 14 * 24 * time.Hour, want: "[yellow]in 14d[-]"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := awaySince(tc.in, tc.unset); got != tc.want {
+				t.Errorf("awaySince(%v, unset=%v) = %q, want %q", tc.in, tc.unset, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestUnavailableField(t *testing.T) {
+	t.Parallel()
+
+	if got := unavailableField(time.Time{}); got != "" {
+		t.Errorf("unavailableField(zero) = %q, want empty so field() dims it", got)
+	}
+
+	future := time.Now().AddDate(0, 0, 30)
+	got := unavailableField(future)
+	if want := future.Format(models.DateLayout); !strings.Contains(got, want) {
+		t.Errorf("unavailableField(future) = %q, want it to contain %q", got, want)
+	}
+	if strings.Contains(got, "elapsed") {
+		t.Errorf("unavailableField(future) = %q, should not be marked elapsed", got)
+	}
+
+	past := time.Now().AddDate(0, 0, -30)
+	if got := unavailableField(past); !strings.Contains(got, "elapsed") {
+		t.Errorf("unavailableField(past) = %q, want it marked elapsed", got)
+	}
+}
+
 func TestLeadDetailShowsFields(t *testing.T) {
 	t.Parallel()
 	offers := []models.Offer{{ID: 3, LeadID: 1, Title: "Pilot", Subject: "Intro"}}
-	out := leadDetail(models.Lead{Name: "Jane", CompanyID: 7, Tags: []string{"vip"}, Quality: 8, Status: models.StatusNew}, testCompanyName, offers)
-	for _, want := range []string{"Name:", "Jane", "Company:", "Acme", "Tags:", "vip", "Quality:", "8", "Status:", "new", "Offers", "Pilot", "Created:"} {
+	lead := models.Lead{
+		Name: "Jane", CompanyID: 7, Tags: []string{"vip"}, Quality: 8, Status: models.StatusNew,
+		UnavailableUntil: time.Date(2099, 8, 15, 0, 0, 0, 0, time.UTC),
+	}
+	out := leadDetail(lead, testCompanyName, offers)
+	for _, want := range []string{
+		"Name:", "Jane", "Company:", "Acme", "Tags:", "vip", "Quality:", "8",
+		"Status:", "new", "Away until:", "2099-08-15", "Offers", "Pilot", "Created:",
+	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("lead detail missing %q in:\n%s", want, out)
 		}
