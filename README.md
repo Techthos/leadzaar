@@ -35,9 +35,6 @@ make lint         # golangci-lint run
 make check        # fmt + tidy + lint + test
 ```
 
-> The surfaces are not implemented yet — this is the initial scaffold. `make build` / `make test`
-> are green from day one; running a mode currently reports "not yet implemented".
-
 `make check` (fmt + tidy + lint + test) mirrors CI and is the gate to run before pushing.
 
 ### Database location
