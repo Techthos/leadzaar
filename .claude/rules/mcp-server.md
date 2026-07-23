@@ -1,5 +1,5 @@
 ---
-description: How to build the MCP server in internal/server using github.com/mark3labs/mcp-go — server construction, tool/resource/prompt registration, transports, middleware, and conventions.
+description: How to build the MCP server in internal/server using github.com/mark3labs/mcp-go — server construction, tool/resource/prompt registration, transports, middleware, conventions, and the interactive UI (gadget widget) requirement for CRUD tools.
 paths: internal/server/**
 ---
 
@@ -89,6 +89,32 @@ Distinguish the two failure modes:
 
 Build success results with: `mcp.NewToolResultText(...)`, `mcp.NewToolResultJSON(v)`, or `mcp.NewToolResultStructured(v, fallbackText)` (structured output + plain-text fallback for older clients).
 
+## Interactive UI for CRUD tools — embedded gadget widgets
+
+Every CRUD tool (create/read/update/delete over a domain entity) also ships an **interactive UI
+version** — a widget built with `github.com/techthos/gadget` — not just a text/JSON result.
+**Invoke the `gadget-mcp-ui` skill before writing any widget code**; the skill and its
+`reference.md` are the source of truth for the gadget API — do not restate or improvise it here.
+
+Widgets are delivered **embedded per call** (the community mcp-ui convention, rendered by hosts
+like LibreChat; gadget's runtime falls back to the mcp-ui action protocol automatically when no
+MCP Apps host answers):
+
+- Build the widget **per call** with the data baked in (`InitialData`) and a **unique `ui://` URI
+  per render**; append the rendered `Document()` to the tool result's `content` as an embedded
+  resource (`mcp.NewEmbeddedResource(mcp.TextResourceContents{URI, MIMEType: "text/html", Text})`)
+  **after** the JSON text block. The JSON result must always stand alone — widget build/render
+  failures are logged to stderr and never fail the tool.
+- **Table** for list/read output, **Form** for create/update input (prefill via baked `values`,
+  inline field errors under `errors` keyed by field name).
+- Actions and submits target the **normal model-visible tools** — in an mcp-ui host a click
+  becomes a follow-up turn where the model runs that tool. Mutating tools embed the **refreshed
+  dataset's widget** in their result so the effect is visible.
+- **Destructive actions (delete)**: table row actions with `Action.Confirm` — the sandboxed
+  iframe has no native `confirm()`/`alert()`.
+- New or changed widgets and tools are product-surface changes → update `docs/SPECIFICATIONS.md`
+  in the **same commit** (`specification-rules.md`).
+
 ## Resources
 
 Register with `s.AddResource(resource, handler)`. Use URI templates for parameterized resources:
@@ -139,3 +165,6 @@ Test handlers through the in-process client (`client.NewInProcessClient(s)`) so 
 4. User/input errors → `NewToolResultError(...), nil`; infrastructure errors → `nil, err`.
 5. Enable the matching capability in `NewMCPServer` and confirm `WithRecovery()` is set.
 6. Add an in-process client test.
+7. CRUD tool? Ship its gadget widget UI (per-call embedded Table/Form, actions targeting the
+   model-visible tools) via the `gadget-mcp-ui` skill, and update `docs/SPECIFICATIONS.md` in the
+   same commit.

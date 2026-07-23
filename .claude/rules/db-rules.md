@@ -35,6 +35,56 @@ These rules apply when working in `internal/db` (the storage layer) and `interna
   held read handle blocks all writers; the only way two processes can both write is for **neither to
   hold any handle while idle**.
 
+## Database location — one resolver, env-var overridable
+
+The DB path is **resolved in exactly one place** — a `DefaultPath()` function in `internal/db` — and
+every caller (each `cmd/` mode, tests, tooling) goes through it. Never hardcode a path at a call site
+and never rebuild the `filepath.Join(home, ...)` expression in a second package: a second copy is how
+the TUI and the MCP server end up on different files.
+
+**Precedence, highest first:**
+
+1. **An explicit `--db <path>` flag** — the operator said exactly what they meant; nothing overrides it.
+2. **The `<APP>_DB` environment variable** — uppercased binary name plus `_DB` (e.g. `BINZAAR_DB`).
+   An **empty value counts as unset** and falls through to the default.
+3. **The XDG default** — `$XDG_DATA_HOME/<app>/<app>.db`, falling back to
+   `~/.local/share/<app>/<app>.db` when `XDG_DATA_HOME` is empty.
+
+The env-var tier is **not optional**. It is what makes the app usable without flag plumbing:
+separate profiles/datasets, a scratch DB in tests and CI, a mounted volume in a container, and a way
+to point an MCP client at the same file the TUI uses when the launcher gives you no argv control.
+
+- **Resolution is pure and side-effect free.** `DefaultPath()` computes a string — it must not create
+  directories, touch the file, or open bbolt. Directory creation (`os.MkdirAll` on
+  `filepath.Dir(path)`, `0o755`) belongs to whatever opens the DB.
+- **Fail loudly if there is no home.** If `os.UserHomeDir()` errors and neither a flag nor the env
+  var was given, return that error. Do **not** silently fall back to a relative path — that quietly
+  creates a stray DB under whatever directory the user happened to `cd` into, splitting their data.
+- **Don't expand `~` yourself.** A flag or env-var value is used verbatim; the shell already expands
+  `~`, and a literal `~` from a non-shell caller is a real (ugly) directory name, not a home reference.
+- **Tests never touch the resolved path.** Use `t.TempDir()` and pass the path in explicitly. A test
+  that reads the operator's real DB is a bug; one that writes it is data loss.
+- **Document it.** The env var belongs in the README's environment table and in
+  `docs/SPECIFICATIONS.md` alongside the flag — adding or renaming it is a spec change.
+
+```go
+// DefaultPath reports where the database lives, honouring <APP>_DB.
+// An explicit --db flag takes precedence and is applied by the caller in cmd/.
+func DefaultPath() (string, error) {
+    if p := os.Getenv(dbPathEnv); p != "" { // dbPathEnv = "<APP>_DB"
+        return p, nil
+    }
+    if dir := os.Getenv("XDG_DATA_HOME"); dir != "" {
+        return filepath.Join(dir, appName, appName+".db"), nil
+    }
+    home, err := os.UserHomeDir()
+    if err != nil {
+        return "", fmt.Errorf("resolve home directory for default db path: %w", err)
+    }
+    return filepath.Join(home, ".local", "share", appName, appName+".db"), nil
+}
+```
+
 ## Opening the database — connection-per-operation (this project)
 
 This project lets the TUI and MCP modes run as **concurrent processes** against one file, so it does

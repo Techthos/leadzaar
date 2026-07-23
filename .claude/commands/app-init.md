@@ -36,7 +36,7 @@ Initialize a minimal, idiomatic Go codebase in the current directory.
    - `main.go` — minimal entry point that only wires dependencies and starts the app.
    - `main_test.go` — one trivial passing test so `go test ./...` is green from day one.
 
-3. **`.gitignore`** — Go-appropriate: compiled binaries, `*.exe`, `*.test`, `*.out`, `vendor/` (if unused), `.env`, `dist/`, IDE dirs.
+3. **`.gitignore`** — Go-appropriate: compiled binaries, `bin/`, `*.exe`, `*.test`, `*.out`, `vendor/` (if unused), `.env`, `dist/`, IDE dirs.
 
 4. **`README.md`** — project name, one-line description, and a Getting Started section (build, run, test, lint).
 
@@ -48,7 +48,7 @@ Initialize a minimal, idiomatic Go codebase in the current directory.
    - `fmt`   → `gofumpt -w .`
    - `lint`  → `golangci-lint run`
    - `test`  → `go test ./... -race -cover`
-   - `build` → `go build ./...`
+   - `build` → `go build -o bin/<binary-name> .` — must fully build the binary and place it at `./bin/<binary-name>` (see `.claude/rules/makefile-rules.md`); the `go build` output always lands under `./bin/`, never the repo root
    - `tidy`  → `go mod tidy`
    - `check` → runs fmt, tidy, lint, test in sequence
    - `run`   → `go run .`
@@ -59,7 +59,7 @@ Initialize a minimal, idiomatic Go codebase in the current directory.
 
 ### Finish
 
-- Run `go build ./...` and `go test ./...` to prove the scaffold compiles and tests pass.
+- Run `make build` (must produce `./bin/<binary-name>`) and `go test ./...` to prove the scaffold compiles and tests pass.
 - Report any tools the project needs but that aren't installed (`golangci-lint`, `gofumpt`) with the install command, rather than failing silently.
 - Summarize what was created as a short file tree.
 - **Offer the release workflow:** ask whether to also add a cross-platform build-and-release
