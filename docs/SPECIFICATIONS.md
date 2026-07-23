@@ -410,7 +410,9 @@ record carries an optional `CompanyID`, validated to reference an existing Compa
 Server built with `github.com/mark3labs/mcp-go` (`internal/server`), stdio transport selected in
 `cmd/`. Capabilities: tools, resources, prompts; `WithRecovery()` + `WithLogging()` enabled. Logs go
 to **stderr** only (stdout is the protocol channel). User/input errors →
-`NewToolResultError(...), nil`; infrastructure errors → `nil, err`.
+`NewToolResultError(...), nil`; infrastructure errors → `nil, err`. CRUD tool results additionally
+carry an embedded interactive widget built with `github.com/techthos/gadget` — see "Interactive
+widget UI" below.
 
 ### Tools
 
@@ -464,6 +466,37 @@ responses small; the complete record (including that text) is fetched with `get_
   timestamps).
 - **MinimalCompany** — drops `notes` (keeps id, name, website, industry, phone, timestamps).
 - **MinimalOffer** — drops `description` and `body` (keeps id, leadId, title, subject, timestamps).
+
+### Interactive widget UI (embedded, per call)
+
+Every CRUD tool (and `pipeline_summary`) also ships an **interactive UI version** — a
+`github.com/techthos/gadget` widget (Table/Form) delivered in **embedded per-call mode**, the
+community mcp-ui convention rendered by hosts like LibreChat (gadget's runtime falls back to the
+mcp-ui action protocol automatically when no MCP Apps host answers). Contract:
+
+- Each render is a **fresh, self-contained HTML document** with the call's data baked in
+  (`InitialData`) and a **unique `ui://leadzaar/<kind>/<render>` URI**, appended to the tool
+  result's `content` as an embedded `text/html` resource **after** the JSON text block. The JSON
+  result always stands alone — widget build/render failures are logged to stderr and never fail
+  the tool.
+- Widget actions and form submits target the **normal model-visible tools**: in an mcp-ui host a
+  click becomes a follow-up turn where the model runs that tool (argument types are
+  model-mediated). Destructive row actions use gadget's inline two-phase `Confirm` (the sandboxed
+  iframe has no native `confirm()`).
+
+Per tool kind:
+
+| tool kind                            | embedded widget                                                                                                    |
+|--------------------------------------|--------------------------------------------------------------------------------------------------------------------|
+| `list_*`                             | **Table** of the returned page (filter box, client-side page size 10, badge-rendered enums, per-row **Delete** — plus **Convert** on leads — with inline confirm) |
+| `get_*`                              | one-row **Table** of that record (same columns/actions)                                                            |
+| `create_*` / `update_*` success      | prefilled edit **Form** for the saved record; submit targets `update_*` (create forms omit `id`, and the lead create form omits `status`) |
+| `create_*` / `update_*` validation failure | the **Form** with the submitted values baked in plus the error under `errors`, mapped **best-effort** onto the field its message names (fallback: the first required field); the retry form targets the failing tool |
+| `delete_*`, `convert_lead`           | **refreshed list Table** (default first page) so the effect is visible — embedded mode has no rows-refresh round-trip |
+| `pipeline_summary`                   | two read-only **Tables**: deals by stage (one row per stage-currency pair — totals never summed across currencies) and leads by status |
+
+A `get_*`/`update_*` **not-found** error embeds no widget (there is no record to render). New or
+changed widgets are product-surface changes and update this spec in the same commit.
 
 ### Resources (read-only)
 

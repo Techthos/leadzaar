@@ -2,10 +2,12 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/techthos/gadget"
 	"github.com/techthos/leadzaar/internal/db"
 	"github.com/techthos/leadzaar/internal/models"
 )
@@ -76,9 +78,16 @@ func (h *handlers) createOffer(_ context.Context, _ mcp.CallToolRequest, a creat
 		LeadID: a.LeadID, Title: a.Title, Description: a.Description, Subject: a.Subject, Body: a.Body,
 	})
 	if err != nil {
-		return toolErr(err)
+		res, _ := toolErr(err)
+		embedWidget(res, offerForm("create_offer", createOfferValues(a), offerFieldErrors(err)))
+		return res, nil
 	}
-	return jsonResult(o)
+	res, err := jsonResult(o)
+	if err != nil {
+		return nil, err
+	}
+	embedWidget(res, offerForm("update_offer", offerValues(o), nil))
+	return res, nil
 }
 
 func (h *handlers) listOffers(_ context.Context, _ mcp.CallToolRequest, a listOffersArgs) (*mcp.CallToolResult, error) {
@@ -93,8 +102,14 @@ func (h *handlers) listOffers(_ context.Context, _ mcp.CallToolRequest, a listOf
 	if err != nil {
 		return toolErr(err)
 	}
-	return pageResult("offers", toOfferListItems(page.Offers),
+	res, err := pageResult("offers", toOfferListItems(page.Offers),
 		page.Page, page.PageSize, page.Total, page.TotalPages, page.HasMore)
+	if err != nil {
+		return nil, err
+	}
+	embedTable(res, func(rows []map[string]any) *gadget.Table { return offersTable("Offers", rows) },
+		toOfferListItems(page.Offers))
+	return res, nil
 }
 
 func (h *handlers) getOffer(_ context.Context, _ mcp.CallToolRequest, a idArg) (*mcp.CallToolResult, error) {
@@ -102,7 +117,14 @@ func (h *handlers) getOffer(_ context.Context, _ mcp.CallToolRequest, a idArg) (
 	if err != nil {
 		return toolErr(err)
 	}
-	return jsonResult(o)
+	res, err := jsonResult(o)
+	if err != nil {
+		return nil, err
+	}
+	embedTable(res, func(rows []map[string]any) *gadget.Table {
+		return offersTable(fmt.Sprintf("Offer #%d", o.ID), rows)
+	}, []offerListItem{toOfferListItem(o)})
+	return res, nil
 }
 
 func (h *handlers) updateOffer(_ context.Context, _ mcp.CallToolRequest, a updateOfferArgs) (*mcp.CallToolResult, error) {
@@ -117,14 +139,26 @@ func (h *handlers) updateOffer(_ context.Context, _ mcp.CallToolRequest, a updat
 	setIf(&o.Body, a.Body)
 	updated, err := h.store.UpdateOffer(o)
 	if err != nil {
-		return toolErr(err)
+		res, _ := toolErr(err)
+		embedWidget(res, offerForm("update_offer", offerValues(o), offerFieldErrors(err)))
+		return res, nil
 	}
-	return jsonResult(updated)
+	res, err := jsonResult(updated)
+	if err != nil {
+		return nil, err
+	}
+	embedWidget(res, offerForm("update_offer", offerValues(updated), nil))
+	return res, nil
 }
 
 func (h *handlers) deleteOffer(_ context.Context, _ mcp.CallToolRequest, a idArg) (*mcp.CallToolResult, error) {
 	if err := h.store.DeleteOffer(a.ID); err != nil {
 		return toolErr(err)
 	}
-	return jsonResult(map[string]any{"deleted": a.ID})
+	res, err := jsonResult(map[string]any{"deleted": a.ID})
+	if err != nil {
+		return nil, err
+	}
+	h.embedRefreshedOffers(res)
+	return res, nil
 }

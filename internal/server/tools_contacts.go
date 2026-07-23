@@ -2,10 +2,12 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/techthos/gadget"
 	"github.com/techthos/leadzaar/internal/db"
 	"github.com/techthos/leadzaar/internal/models"
 )
@@ -78,9 +80,16 @@ func (h *handlers) createContact(_ context.Context, _ mcp.CallToolRequest, a cre
 		Name: a.Name, CompanyID: a.CompanyID, Email: a.Email, Phone: a.Phone, Tags: a.Tags, Notes: a.Notes,
 	})
 	if err != nil {
-		return toolErr(err)
+		res, _ := toolErr(err)
+		embedWidget(res, contactForm("create_contact", createContactValues(a), contactFieldErrors(err)))
+		return res, nil
 	}
-	return jsonResult(c)
+	res, err := jsonResult(c)
+	if err != nil {
+		return nil, err
+	}
+	embedWidget(res, contactForm("update_contact", contactValues(c), nil))
+	return res, nil
 }
 
 func (h *handlers) listContacts(_ context.Context, _ mcp.CallToolRequest, a listContactsArgs) (*mcp.CallToolResult, error) {
@@ -96,8 +105,14 @@ func (h *handlers) listContacts(_ context.Context, _ mcp.CallToolRequest, a list
 	if err != nil {
 		return toolErr(err)
 	}
-	return pageResult("contacts", toContactListItems(page.Contacts),
+	res, err := pageResult("contacts", toContactListItems(page.Contacts),
 		page.Page, page.PageSize, page.Total, page.TotalPages, page.HasMore)
+	if err != nil {
+		return nil, err
+	}
+	embedTable(res, func(rows []map[string]any) *gadget.Table { return contactsTable("Contacts", rows) },
+		toContactListItems(page.Contacts))
+	return res, nil
 }
 
 func (h *handlers) getContact(_ context.Context, _ mcp.CallToolRequest, a idArg) (*mcp.CallToolResult, error) {
@@ -105,7 +120,14 @@ func (h *handlers) getContact(_ context.Context, _ mcp.CallToolRequest, a idArg)
 	if err != nil {
 		return toolErr(err)
 	}
-	return jsonResult(c)
+	res, err := jsonResult(c)
+	if err != nil {
+		return nil, err
+	}
+	embedTable(res, func(rows []map[string]any) *gadget.Table {
+		return contactsTable(fmt.Sprintf("Contact #%d", c.ID), rows)
+	}, []contactListItem{toContactListItem(c)})
+	return res, nil
 }
 
 func (h *handlers) updateContact(_ context.Context, _ mcp.CallToolRequest, a updateContactArgs) (*mcp.CallToolResult, error) {
@@ -123,9 +145,16 @@ func (h *handlers) updateContact(_ context.Context, _ mcp.CallToolRequest, a upd
 	}
 	updated, err := h.store.UpdateContact(c)
 	if err != nil {
-		return toolErr(err)
+		res, _ := toolErr(err)
+		embedWidget(res, contactForm("update_contact", contactValues(c), contactFieldErrors(err)))
+		return res, nil
 	}
-	return jsonResult(updated)
+	res, err := jsonResult(updated)
+	if err != nil {
+		return nil, err
+	}
+	embedWidget(res, contactForm("update_contact", contactValues(updated), nil))
+	return res, nil
 }
 
 func (h *handlers) deleteContact(_ context.Context, _ mcp.CallToolRequest, a idArg) (*mcp.CallToolResult, error) {
@@ -133,5 +162,10 @@ func (h *handlers) deleteContact(_ context.Context, _ mcp.CallToolRequest, a idA
 	if err != nil {
 		return toolErr(err)
 	}
-	return jsonResult(map[string]any{"deleted": a.ID, "deleted_deal_ids": deletedDeals})
+	res, err := jsonResult(map[string]any{"deleted": a.ID, "deleted_deal_ids": deletedDeals})
+	if err != nil {
+		return nil, err
+	}
+	h.embedRefreshedContacts(res)
+	return res, nil
 }

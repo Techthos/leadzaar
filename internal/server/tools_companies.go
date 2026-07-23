@@ -2,10 +2,12 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/techthos/gadget"
 	"github.com/techthos/leadzaar/internal/db"
 	"github.com/techthos/leadzaar/internal/models"
 )
@@ -74,9 +76,16 @@ func (h *handlers) createCompany(_ context.Context, _ mcp.CallToolRequest, a cre
 		Name: a.Name, Website: a.Website, Industry: a.Industry, Phone: a.Phone, Notes: a.Notes,
 	})
 	if err != nil {
-		return toolErr(err)
+		res, _ := toolErr(err)
+		embedWidget(res, companyForm("create_company", createCompanyValues(a), companyFieldErrors(err)))
+		return res, nil
 	}
-	return jsonResult(c)
+	res, err := jsonResult(c)
+	if err != nil {
+		return nil, err
+	}
+	embedWidget(res, companyForm("update_company", companyValues(c), nil))
+	return res, nil
 }
 
 func (h *handlers) listCompanies(_ context.Context, _ mcp.CallToolRequest, a listCompaniesArgs) (*mcp.CallToolResult, error) {
@@ -90,8 +99,14 @@ func (h *handlers) listCompanies(_ context.Context, _ mcp.CallToolRequest, a lis
 	if err != nil {
 		return toolErr(err)
 	}
-	return pageResult("companies", toCompanyListItems(page.Companies),
+	res, err := pageResult("companies", toCompanyListItems(page.Companies),
 		page.Page, page.PageSize, page.Total, page.TotalPages, page.HasMore)
+	if err != nil {
+		return nil, err
+	}
+	embedTable(res, func(rows []map[string]any) *gadget.Table { return companiesTable("Companies", rows) },
+		toCompanyListItems(page.Companies))
+	return res, nil
 }
 
 func (h *handlers) getCompany(_ context.Context, _ mcp.CallToolRequest, a idArg) (*mcp.CallToolResult, error) {
@@ -99,7 +114,14 @@ func (h *handlers) getCompany(_ context.Context, _ mcp.CallToolRequest, a idArg)
 	if err != nil {
 		return toolErr(err)
 	}
-	return jsonResult(c)
+	res, err := jsonResult(c)
+	if err != nil {
+		return nil, err
+	}
+	embedTable(res, func(rows []map[string]any) *gadget.Table {
+		return companiesTable(fmt.Sprintf("Company #%d", c.ID), rows)
+	}, []companyListItem{toCompanyListItem(c)})
+	return res, nil
 }
 
 func (h *handlers) updateCompany(_ context.Context, _ mcp.CallToolRequest, a updateCompanyArgs) (*mcp.CallToolResult, error) {
@@ -114,9 +136,16 @@ func (h *handlers) updateCompany(_ context.Context, _ mcp.CallToolRequest, a upd
 	setIf(&c.Notes, a.Notes)
 	updated, err := h.store.UpdateCompany(c)
 	if err != nil {
-		return toolErr(err)
+		res, _ := toolErr(err)
+		embedWidget(res, companyForm("update_company", companyValues(c), companyFieldErrors(err)))
+		return res, nil
 	}
-	return jsonResult(updated)
+	res, err := jsonResult(updated)
+	if err != nil {
+		return nil, err
+	}
+	embedWidget(res, companyForm("update_company", companyValues(updated), nil))
+	return res, nil
 }
 
 func (h *handlers) deleteCompany(_ context.Context, _ mcp.CallToolRequest, a idArg) (*mcp.CallToolResult, error) {
@@ -124,5 +153,10 @@ func (h *handlers) deleteCompany(_ context.Context, _ mcp.CallToolRequest, a idA
 	if err != nil {
 		return toolErr(err)
 	}
-	return jsonResult(map[string]any{"deleted": a.ID, "unlinked": unlinked})
+	res, err := jsonResult(map[string]any{"deleted": a.ID, "unlinked": unlinked})
+	if err != nil {
+		return nil, err
+	}
+	h.embedRefreshedCompanies(res)
+	return res, nil
 }

@@ -12,9 +12,8 @@ separate local processes**: the Store opens bbolt **per operation** (connection-
 no process holds the lock while idle. See `docs/bbolt-concurrent-access-strategy.md`.
 
 This is a **spec-driven template**. `docs/SPECIFICATIONS.md` is the single source of truth for what
-the app is. Implementation is currently partial: `internal/models` and `internal/db` (Leads,
-Contacts, Deals) exist; `internal/tui` and `internal/server` are specified but not yet built, and
-`main.go` reports `mode %q not yet implemented`.
+the app is. All layers are implemented: `internal/models`, `internal/db`, `internal/server` (MCP),
+and `internal/tui`; `main.go` dispatches `-mode tui` (default) or `-mode mcp`.
 
 ## The local-only envelope (hard constraints)
 
@@ -77,7 +76,8 @@ main.go            flag parsing → dispatch to a surface (TUI or MCP). Stays th
 internal/models    plain domain structs (Lead, Contact, Deal) + enums. NO persistence imports.
 internal/db        the Store: the only bbolt-aware package. All CRUD, validation, indexes,
                    and cross-entity use-cases (lead conversion, contact cascade-delete).
-internal/server    MCP stdio server — mark3labs/mcp-go. Consumes internal/db.
+internal/server    MCP stdio server — mark3labs/mcp-go. Consumes internal/db. CRUD tool results
+                   embed per-call interactive widgets (techthos/gadget, mcp-ui embedded mode).
 internal/tui       tview TUI. Consumes internal/db.
 ```
 

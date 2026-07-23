@@ -2,10 +2,12 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/techthos/gadget"
 	"github.com/techthos/leadzaar/internal/db"
 	"github.com/techthos/leadzaar/internal/models"
 )
@@ -81,9 +83,16 @@ func (h *handlers) createDeal(_ context.Context, _ mcp.CallToolRequest, a create
 		Stage: models.DealStage(a.Stage), Notes: a.Notes,
 	})
 	if err != nil {
-		return toolErr(err)
+		res, _ := toolErr(err)
+		embedWidget(res, dealForm("create_deal", createDealValues(a), dealFieldErrors(err)))
+		return res, nil
 	}
-	return jsonResult(d)
+	res, err := jsonResult(d)
+	if err != nil {
+		return nil, err
+	}
+	embedWidget(res, dealForm("update_deal", dealValues(d), nil))
+	return res, nil
 }
 
 func (h *handlers) listDeals(_ context.Context, _ mcp.CallToolRequest, a listDealsArgs) (*mcp.CallToolResult, error) {
@@ -99,8 +108,14 @@ func (h *handlers) listDeals(_ context.Context, _ mcp.CallToolRequest, a listDea
 	if err != nil {
 		return toolErr(err)
 	}
-	return pageResult("deals", toDealListItems(page.Deals),
+	res, err := pageResult("deals", toDealListItems(page.Deals),
 		page.Page, page.PageSize, page.Total, page.TotalPages, page.HasMore)
+	if err != nil {
+		return nil, err
+	}
+	embedTable(res, func(rows []map[string]any) *gadget.Table { return dealsTable("Deals", rows) },
+		toDealListItems(page.Deals))
+	return res, nil
 }
 
 func (h *handlers) getDeal(_ context.Context, _ mcp.CallToolRequest, a idArg) (*mcp.CallToolResult, error) {
@@ -108,7 +123,14 @@ func (h *handlers) getDeal(_ context.Context, _ mcp.CallToolRequest, a idArg) (*
 	if err != nil {
 		return toolErr(err)
 	}
-	return jsonResult(d)
+	res, err := jsonResult(d)
+	if err != nil {
+		return nil, err
+	}
+	embedTable(res, func(rows []map[string]any) *gadget.Table {
+		return dealsTable(fmt.Sprintf("Deal #%d", d.ID), rows)
+	}, []dealListItem{toDealListItem(d)})
+	return res, nil
 }
 
 func (h *handlers) updateDeal(_ context.Context, _ mcp.CallToolRequest, a updateDealArgs) (*mcp.CallToolResult, error) {
@@ -127,16 +149,28 @@ func (h *handlers) updateDeal(_ context.Context, _ mcp.CallToolRequest, a update
 	}
 	updated, err := h.store.UpdateDeal(d)
 	if err != nil {
-		return toolErr(err)
+		res, _ := toolErr(err)
+		embedWidget(res, dealForm("update_deal", dealValues(d), dealFieldErrors(err)))
+		return res, nil
 	}
-	return jsonResult(updated)
+	res, err := jsonResult(updated)
+	if err != nil {
+		return nil, err
+	}
+	embedWidget(res, dealForm("update_deal", dealValues(updated), nil))
+	return res, nil
 }
 
 func (h *handlers) deleteDeal(_ context.Context, _ mcp.CallToolRequest, a idArg) (*mcp.CallToolResult, error) {
 	if err := h.store.DeleteDeal(a.ID); err != nil {
 		return toolErr(err)
 	}
-	return jsonResult(map[string]any{"deleted": a.ID})
+	res, err := jsonResult(map[string]any{"deleted": a.ID})
+	if err != nil {
+		return nil, err
+	}
+	h.embedRefreshedDeals(res)
+	return res, nil
 }
 
 func (h *handlers) registerSummaryTool(s *server.MCPServer) {
@@ -148,6 +182,11 @@ func (h *handlers) registerSummaryTool(s *server.MCPServer) {
 		if err != nil {
 			return toolErr(err)
 		}
-		return jsonResult(summary)
+		res, err := jsonResult(summary)
+		if err != nil {
+			return nil, err
+		}
+		embedPipelineSummary(res, summary)
+		return res, nil
 	})
 }

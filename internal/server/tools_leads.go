@@ -2,10 +2,12 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/techthos/gadget"
 	"github.com/techthos/leadzaar/internal/db"
 	"github.com/techthos/leadzaar/internal/models"
 )
@@ -105,7 +107,9 @@ func (h *handlers) registerLeadTools(s *server.MCPServer) {
 func (h *handlers) createLead(_ context.Context, _ mcp.CallToolRequest, a createLeadArgs) (*mcp.CallToolResult, error) {
 	unavailableUntil, err := models.ParseDate(a.UnavailableUntil)
 	if err != nil {
-		return toolErr(err)
+		res, _ := toolErr(err)
+		embedWidget(res, leadForm("create_lead", createLeadValues(a), leadFieldErrors(err)))
+		return res, nil
 	}
 	lead, err := h.store.CreateLead(models.Lead{
 		Name: a.Name, CompanyID: a.CompanyID, Email: a.Email, Phone: a.Phone,
@@ -113,9 +117,16 @@ func (h *handlers) createLead(_ context.Context, _ mcp.CallToolRequest, a create
 		UnavailableUntil: unavailableUntil,
 	})
 	if err != nil {
-		return toolErr(err)
+		res, _ := toolErr(err)
+		embedWidget(res, leadForm("create_lead", createLeadValues(a), leadFieldErrors(err)))
+		return res, nil
 	}
-	return jsonResult(lead)
+	res, err := jsonResult(lead)
+	if err != nil {
+		return nil, err
+	}
+	embedWidget(res, leadForm("update_lead", leadValues(lead), nil))
+	return res, nil
 }
 
 func (h *handlers) listLeads(_ context.Context, _ mcp.CallToolRequest, a listLeadsArgs) (*mcp.CallToolResult, error) {
@@ -131,8 +142,14 @@ func (h *handlers) listLeads(_ context.Context, _ mcp.CallToolRequest, a listLea
 	if err != nil {
 		return toolErr(err)
 	}
-	return pageResult("leads", toLeadListItems(page.Leads),
+	res, err := pageResult("leads", toLeadListItems(page.Leads),
 		page.Page, page.PageSize, page.Total, page.TotalPages, page.HasMore)
+	if err != nil {
+		return nil, err
+	}
+	embedTable(res, func(rows []map[string]any) *gadget.Table { return leadsTable("Leads", rows) },
+		toLeadListItems(page.Leads))
+	return res, nil
 }
 
 func (h *handlers) getLead(_ context.Context, _ mcp.CallToolRequest, a idArg) (*mcp.CallToolResult, error) {
@@ -140,7 +157,14 @@ func (h *handlers) getLead(_ context.Context, _ mcp.CallToolRequest, a idArg) (*
 	if err != nil {
 		return toolErr(err)
 	}
-	return jsonResult(lead)
+	res, err := jsonResult(lead)
+	if err != nil {
+		return nil, err
+	}
+	embedTable(res, func(rows []map[string]any) *gadget.Table {
+		return leadsTable(fmt.Sprintf("Lead #%d", lead.ID), rows)
+	}, []leadListItem{toLeadListItem(lead)})
+	return res, nil
 }
 
 func (h *handlers) updateLead(_ context.Context, _ mcp.CallToolRequest, a updateLeadArgs) (*mcp.CallToolResult, error) {
@@ -173,9 +197,16 @@ func (h *handlers) updateLead(_ context.Context, _ mcp.CallToolRequest, a update
 	}
 	updated, err := h.store.UpdateLead(lead)
 	if err != nil {
-		return toolErr(err)
+		res, _ := toolErr(err)
+		embedWidget(res, leadForm("update_lead", leadValues(lead), leadFieldErrors(err)))
+		return res, nil
 	}
-	return jsonResult(updated)
+	res, err := jsonResult(updated)
+	if err != nil {
+		return nil, err
+	}
+	embedWidget(res, leadForm("update_lead", leadValues(updated), nil))
+	return res, nil
 }
 
 func (h *handlers) convertLead(_ context.Context, _ mcp.CallToolRequest, a convertLeadArgs) (*mcp.CallToolResult, error) {
@@ -185,7 +216,12 @@ func (h *handlers) convertLead(_ context.Context, _ mcp.CallToolRequest, a conve
 	if err != nil {
 		return toolErr(err)
 	}
-	return jsonResult(res)
+	out, err := jsonResult(res)
+	if err != nil {
+		return nil, err
+	}
+	h.embedRefreshedLeads(out)
+	return out, nil
 }
 
 func (h *handlers) deleteLead(_ context.Context, _ mcp.CallToolRequest, a idArg) (*mcp.CallToolResult, error) {
@@ -193,5 +229,10 @@ func (h *handlers) deleteLead(_ context.Context, _ mcp.CallToolRequest, a idArg)
 	if err != nil {
 		return toolErr(err)
 	}
-	return jsonResult(map[string]any{"deleted": a.ID, "deleted_offer_ids": deletedOffers})
+	res, err := jsonResult(map[string]any{"deleted": a.ID, "deleted_offer_ids": deletedOffers})
+	if err != nil {
+		return nil, err
+	}
+	h.embedRefreshedLeads(res)
+	return res, nil
 }
