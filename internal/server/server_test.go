@@ -55,7 +55,7 @@ func callTool(t *testing.T, c *client.Client, ctx context.Context, name string, 
 	return res
 }
 
-// resultText extracts the text payload of a tool result.
+// resultText extracts the text payload (status line) of a tool result.
 func resultText(t *testing.T, res *mcp.CallToolResult) string {
 	t.Helper()
 	if len(res.Content) == 0 {
@@ -66,6 +66,24 @@ func resultText(t *testing.T, res *mcp.CallToolResult) string {
 		t.Fatalf("first content is not text: %T", res.Content[0])
 	}
 	return tc.Text
+}
+
+// decodeStructured unmarshals a tool result's structuredContent into v. Widget-
+// bearing tools keep their machine-readable payload in structuredContent (the
+// text block is a human status line), so tests read the data from there, not
+// from the text.
+func decodeStructured(t *testing.T, res *mcp.CallToolResult, v any) {
+	t.Helper()
+	if res.StructuredContent == nil {
+		t.Fatalf("result has no structuredContent (text: %q)", resultText(t, res))
+	}
+	b, err := json.Marshal(res.StructuredContent)
+	if err != nil {
+		t.Fatalf("marshal structuredContent: %v", err)
+	}
+	if err := json.Unmarshal(b, v); err != nil {
+		t.Fatalf("unmarshal structuredContent: %v", err)
+	}
 }
 
 func TestToolSurfaceRegistered(t *testing.T) {
@@ -89,9 +107,7 @@ func TestLeadToolRoundTrip(t *testing.T) {
 		t.Fatalf("create_lead errored: %s", resultText(t, res))
 	}
 	var lead models.Lead
-	if err := json.Unmarshal([]byte(resultText(t, res)), &lead); err != nil {
-		t.Fatalf("unmarshal lead: %v", err)
-	}
+	decodeStructured(t, res, &lead)
 	if lead.ID == 0 || lead.Status != models.StatusNew {
 		t.Errorf("unexpected lead: %+v", lead)
 	}
@@ -123,7 +139,7 @@ func TestConvertAndPipelineThroughTools(t *testing.T) {
 
 	res := callTool(t, c, ctx, "create_lead", map[string]any{"name": "Jane", "email": "jane@example.com"})
 	var lead models.Lead
-	_ = json.Unmarshal([]byte(resultText(t, res)), &lead)
+	decodeStructured(t, res, &lead)
 
 	conv := callTool(t, c, ctx, "convert_lead", map[string]any{
 		"id": lead.ID, "make_deal": true, "deal_title": "First", "deal_value": 1000.0, "deal_currency": "EUR",
@@ -132,18 +148,14 @@ func TestConvertAndPipelineThroughTools(t *testing.T) {
 		t.Fatalf("convert_lead errored: %s", resultText(t, conv))
 	}
 	var convRes db.ConvertResult
-	if err := json.Unmarshal([]byte(resultText(t, conv)), &convRes); err != nil {
-		t.Fatalf("unmarshal convert result: %v", err)
-	}
+	decodeStructured(t, conv, &convRes)
 	if convRes.Deal == nil || convRes.Contact.ID == 0 {
 		t.Fatalf("convert did not produce contact+deal: %+v", convRes)
 	}
 
 	summaryRes := callTool(t, c, ctx, "pipeline_summary", map[string]any{})
 	var summary models.PipelineSummary
-	if err := json.Unmarshal([]byte(resultText(t, summaryRes)), &summary); err != nil {
-		t.Fatalf("unmarshal summary: %v", err)
-	}
+	decodeStructured(t, summaryRes, &summary)
 	var qualEUR float64
 	for _, ss := range summary.DealsByStage {
 		if ss.Stage == models.StageQualification {
@@ -165,7 +177,7 @@ func TestDeleteContactCascadeThroughTools(t *testing.T) {
 
 	cres := callTool(t, c, ctx, "create_contact", map[string]any{"name": "Acme"})
 	var contact models.Contact
-	_ = json.Unmarshal([]byte(resultText(t, cres)), &contact)
+	decodeStructured(t, cres, &contact)
 
 	_ = callTool(t, c, ctx, "create_deal", map[string]any{
 		"title": "D", "contact_id": contact.ID, "stage": "proposal",
@@ -178,9 +190,7 @@ func TestDeleteContactCascadeThroughTools(t *testing.T) {
 	var payload struct {
 		DeletedDealIDs []uint64 `json:"deleted_deal_ids"`
 	}
-	if err := json.Unmarshal([]byte(resultText(t, del)), &payload); err != nil {
-		t.Fatalf("unmarshal delete payload: %v", err)
-	}
+	decodeStructured(t, del, &payload)
 	if len(payload.DeletedDealIDs) != 1 {
 		t.Errorf("deleted_deal_ids = %v, want 1", payload.DeletedDealIDs)
 	}
@@ -192,7 +202,7 @@ func TestResources(t *testing.T) {
 
 	cres := callTool(t, c, ctx, "create_contact", map[string]any{"name": "Ada"})
 	var contact models.Contact
-	_ = json.Unmarshal([]byte(resultText(t, cres)), &contact)
+	decodeStructured(t, cres, &contact)
 
 	t.Run("read existing contact resource", func(t *testing.T) {
 		req := mcp.ReadResourceRequest{}
@@ -237,10 +247,10 @@ func TestPrompts(t *testing.T) {
 
 	comp := callTool(t, c, ctx, "create_company", map[string]any{"name": "Analytical"})
 	var company models.Company
-	_ = json.Unmarshal([]byte(resultText(t, comp)), &company)
+	decodeStructured(t, comp, &company)
 	cres := callTool(t, c, ctx, "create_contact", map[string]any{"name": "Ada", "company_id": company.ID})
 	var contact models.Contact
-	_ = json.Unmarshal([]byte(resultText(t, cres)), &contact)
+	decodeStructured(t, cres, &contact)
 	_ = callTool(t, c, ctx, "create_lead", map[string]any{"name": "Fresh"})
 
 	t.Run("triage_new_leads", func(t *testing.T) {

@@ -42,19 +42,21 @@ Sorting, filtering, pagination, and selection are **client-side** over delivered
 
 ## Two delivery modes — pick by host
 
-1. **MCP Apps template mode** (spec-compliant hosts, e.g. Claude): register the widget once as a
-   `ui://` template resource, link tools via `_meta.ui.resourceUri`, deliver data through
-   `structuredContent` as above.
-2. **Embedded per-call mode** (community **mcp-ui** hosts, e.g. LibreChat v0.8.x, which do NOT
-   fetch templates or push tool results): build the widget **per call** with the data baked in
-   (`InitialData` — the runtime paints it before any host handshake) and a **unique URI per
-   render**, and append the rendered `Document()` to the tool result's `content` as an embedded
-   resource (`{type:"resource", resource:{uri, mimeType:"text/html", text: doc}}`). Actions fall
-   back automatically to the mcp-ui postMessage protocol when no MCP Apps host answers
-   `ui/initialize` — fire-and-forget (`dispatched: true`): the host turns the click into a
-   follow-up turn where the model runs the tool. Therefore point actions/submits at
-   **model-visible** tools and embed the **refreshed dataset's widget** in mutating tools'
-   results (there is no rows-refresh round-trip). See reference.md §Embedded per-call mode.
+1. **MCP Apps template mode** (register-once hosts): register the widget once as a `ui://` template
+   resource, link tools via `_meta.ui.resourceUri`, deliver data through `structuredContent` as
+   above. Row/submit actions may target **app-only** tools (hidden from the model, callable from
+   the widget).
+2. **Embedded per-call mode** (what this template's binzaar server uses): build the widget **per
+   call** with the data baked in (`InitialData` — the runtime paints it at first render) and a
+   **unique URI per render**, and append the rendered `Document()` to the tool result's `content`
+   as an embedded resource (`{type:"resource", resource:{uri, mimeType:"text/html;profile=mcp-app",
+   text: doc}}`). The MCP Apps profile mimeType makes the host attach its **App Bridge**, which
+   drives every interaction through the standard MCP Apps JSON-RPC (`io.modelcontextprotocol/ui`):
+   a widget action becomes a **`tools/call`** the bridge runs directly against the server, a link
+   becomes **`ui/open-link`**, and the iframe height is applied via
+   **`ui/notifications/size-changed`**. Point actions/submits at **model-visible** tools and embed
+   the **refreshed dataset's widget** in each mutating tool's result (there is no separate
+   rows-refresh round-trip). See reference.md §Embedded per-call mode.
 
 ## Install
 
@@ -109,11 +111,10 @@ The core is **SDK-agnostic**. Pick the wiring path by what MCP SDK this project 
 8. Documents must stay **self-contained** — no external URLs/CDNs/fonts, also not via `Theme`.
 9. In **template mode**, widgets are registered **once, immutably**; per-call variation belongs
    in tool-result data, not the template. In **embedded mode** it is the opposite: every render
-   is a fresh document with a fresh unique URI — reusing a URI makes mcp-ui hosts show a stale
-   render.
-10. In **embedded mode**, never register `ui_*` app-only helper tools or rely on
-    `_meta.ui.visibility` — mcp-ui hosts ignore `_meta`, and actions route through the model, so
-    they must target the normal model-visible tools.
+   is a fresh document with a fresh unique URI — reusing a URI makes hosts show a stale render.
+10. In **embedded mode**, actions target the **normal model-visible tools** — the per-call document
+    is not a registered template with linked app-only tools, so don't register `ui_*` app-only
+    helpers or rely on `_meta.ui.visibility` there.
 11. Column `Key`s must match the **JSON tag names** of your row structs (`RowsOf` honors
     `json` tags), not Go field names.
 12. Sort/filter/pagination are client-side — for big datasets, bound the list server-side.

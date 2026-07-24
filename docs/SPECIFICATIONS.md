@@ -470,30 +470,63 @@ responses small; the complete record (including that text) is fetched with `get_
 ### Interactive widget UI (embedded, per call)
 
 Every CRUD tool (and `pipeline_summary`) also ships an **interactive UI version** — a
-`github.com/techthos/gadget` widget (Table/Form) delivered in **embedded per-call mode**, the
-community mcp-ui convention rendered by hosts like LibreChat (gadget's runtime falls back to the
-mcp-ui action protocol automatically when no MCP Apps host answers). Contract:
+`github.com/techthos/gadget` widget (Table/CardList/Card/Form) following the **MCP Apps extension**
+(`io.modelcontextprotocol/ui`, spec version `2026-01-26`). The server delivers widgets in **two
+modes at once**: the spec-canonical **linked template** (a stable `ui://leadzaar/<entity>` resource
+that a tool links via `_meta.ui.resourceUri`, rendered from `structuredContent`) and **embedded per
+call** (the document inline in every tool result). Interactions flow through the standard MCP Apps
+**App Bridge**, never a custom event channel or a chat-prompt injection. Contract:
 
-- Each render is a **fresh, self-contained HTML document** with the call's data baked in
-  (`InitialData`) and a **unique `ui://leadzaar/<kind>/<render>` URI**, appended to the tool
-  result's `content` as an embedded `text/html` resource **after** the JSON text block. The JSON
-  result always stands alone — widget build/render failures are logged to stderr and never fail
-  the tool.
-- Widget actions and form submits target the **normal model-visible tools**: in an mcp-ui host a
-  click becomes a follow-up turn where the model runs that tool (argument types are
-  model-mediated). Destructive row actions use gadget's inline two-phase `Confirm` (the sandboxed
-  iframe has no native `confirm()`).
+- **App discovery (linked template).** Picker-style hosts list an app only when a tool carries
+  `_meta.ui.resourceUri`. The browse tools — the five `list_*` tools and `pipeline_summary` — each
+  register a stable `ui://leadzaar/<entity>` template resource (served with MIME
+  `text/html;profile=mcp-app`) and link it, so they surface as apps ("Leads", "Contacts", "Deals",
+  "Companies", "Offers", "Pipeline") and render from the tool result's `structuredContent`. The
+  create/update/get/delete/convert tools are **not** separate apps; they render via the embedded
+  document below (and their mutations refresh an open browse widget in place). The MCP Apps extension
+  is advertised in the server's `experimental` capabilities (mark3labs/mcp-go exposes no
+  `extensions` slot).
+
+- Each render is a **fresh, self-contained HTML document** tagged with the **MCP Apps HTML profile**
+  (`text/html;profile=mcp-app`), with the call's data baked in (`InitialData`) and a **unique
+  `ui://leadzaar/<kind>/<render>` URI**, appended to the tool result's `content` as an embedded
+  resource **after** the text block. The non-UI result (**status text + `structuredContent`**)
+  always stands alone — widget build/render failures are logged to stderr and never fail the tool.
+- **The text block is a short human status line, not raw JSON** (e.g. `"3 leads."`,
+  `"Lead #7 created."`, `"Lead #7 deleted."`): a raw-JSON block flashes visibly in an MCP Apps host
+  until the widget paints over it, so the machine-readable payload lives in `structuredContent` (what
+  the model reads) and the text block is the banner the user sees.
+- Widget actions and form submits target the **normal model-visible tools**; a click/submit
+  dispatches a standard **`tools/call`** over the App Bridge that the host runs directly against this
+  server. Destructive row actions use gadget's inline two-phase `Confirm` (the sandboxed iframe has
+  no native `confirm()`).
+- **In-place refresh:** a mutating tool returns the **refreshed collection under the target table's
+  `RowsKey`** in `structuredContent` (each entity table keys its rows under its own name — `leads`,
+  `contacts`, `deals`, `companies`, `offers`), so the open widget repaints in place via
+  `ui/notifications/tool-result`. A freshly rendered widget is also embedded as a fallback for hosts
+  that render result widgets rather than patching in place.
+- **Re-hydration:** every embedded **browse** widget — a `list_*` **table** or **card list**, plus the
+  two summary tables — sets a `LoadTool` (its `list_*` tool, or `pipeline_summary` for the summaries)
+  that the runtime calls once on load to replace the frozen baked snapshot with current data.
+  Create/update **forms** and the single-record **detail cards** (`get_company` / `get_contact` /
+  `get_offer`) deliberately set **no `LoadTool`**: a form is an edit buffer whose baked snapshot (the
+  values just submitted or saved) is exactly what should repaint on remount (a create form has no
+  record to load, and re-fetching would discard in-progress input), and a detail card is fed the flat
+  record — not a rows array under its `RowsKey` — so its baked snapshot is likewise the correct repaint.
 
 Per tool kind:
 
 | tool kind                            | embedded widget                                                                                                    |
 |--------------------------------------|--------------------------------------------------------------------------------------------------------------------|
-| `list_*`                             | **Table** of the returned page (filter box, client-side page size 10, badge-rendered enums, per-row **Delete** — plus **Convert** on leads — with inline confirm) |
-| `get_*`                              | one-row **Table** of that record (same columns/actions)                                                            |
+| `list_leads` / `list_deals` / `list_offers` | **Table** of the returned page under its `RowsKey` (filter box, client-side page size 10, badge-rendered enums, per-row **Delete** — plus **Convert** on leads — with inline confirm), `LoadTool` = the `list_*` tool |
+| `list_companies` / `list_contacts`   | **CardList** of the returned page under its `RowsKey` (filter box, client-side page size **5**, per-card **Delete** with inline confirm), `LoadTool` = the `list_*` tool. Company cards show name/website/phone/updated; contact cards name/email/phone/company/updated — the long `notes` and (companies) `industry` are omitted from the card |
+| `get_leads` / `get_deals`            | one-row **Table** of that record (same columns/actions/`LoadTool`)                                                 |
+| `get_company` / `get_contact`        | single-record detail **Card** (same fields as its card list, no actions, no `LoadTool`)                            |
+| `get_offer`                          | single-record detail **Card** carrying the full record — title/subject plus lead, **description**, and the full **body** — so an offer reads in one view (the list projection drops the body); no actions, no `LoadTool` |
 | `create_*` / `update_*` success      | prefilled edit **Form** for the saved record; submit targets `update_*` (create forms omit `id`, and the lead create form omits `status`) |
-| `create_*` / `update_*` validation failure | the **Form** with the submitted values baked in plus the error under `errors`, mapped **best-effort** onto the field its message names (fallback: the first required field); the retry form targets the failing tool |
-| `delete_*`, `convert_lead`           | **refreshed list Table** (default first page) so the effect is visible — embedded mode has no rows-refresh round-trip |
-| `pipeline_summary`                   | two read-only **Tables**: deals by stage (one row per stage-currency pair — totals never summed across currencies) and leads by status |
+| `create_*` / `update_*` validation failure | tool-error result carrying the field errors under `errors` in `structuredContent`, plus the **Form** with the submitted values baked in and the error mapped **best-effort** onto the field its message names (fallback: the first required field); the retry form targets the failing tool |
+| `delete_*`, `convert_lead`           | refreshed list widget (**Table**, or **CardList** for companies/contacts) returned under its `RowsKey` (default first page) so the open widget repaints in place; the same widget is embedded as a fallback |
+| `pipeline_summary`                   | two read-only **Tables**: deals by stage (rows under `dealRows`, one row per stage-currency pair — totals never summed across currencies) and leads by status (rows under `statusRows`), both `LoadTool` = `pipeline_summary` |
 
 A `get_*`/`update_*` **not-found** error embeds no widget (there is no record to render). New or
 changed widgets are product-surface changes and update this spec in the same commit.

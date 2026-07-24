@@ -1,7 +1,6 @@
 package server_test
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 
@@ -478,15 +477,15 @@ func equalStrings(a, b []string) bool {
 	return true
 }
 
-// mustJSON asserts a successful tool result and unmarshals its JSON text into v.
+// mustJSON asserts a successful tool result and unmarshals its structuredContent
+// payload into v (widget-bearing tools keep their JSON there; the text block is a
+// human status line).
 func mustJSON(t *testing.T, res *mcp.CallToolResult, v any) {
 	t.Helper()
 	if res.IsError {
 		t.Fatalf("tool returned error: %s", resultText(t, res))
 	}
-	if err := json.Unmarshal([]byte(resultText(t, res)), v); err != nil {
-		t.Fatalf("unmarshal tool result: %v", err)
-	}
+	decodeStructured(t, res, v)
 }
 
 // TestLeadUnavailabilityTools covers the unavailable_until round trip through
@@ -545,9 +544,7 @@ func TestLeadUnavailabilityTools(t *testing.T) {
 		var page struct {
 			Leads []listItem `json:"leads"`
 		}
-		if err := json.Unmarshal([]byte(resultText(t, res)), &page); err != nil {
-			t.Fatalf("decode list_leads: %v", err)
-		}
+		decodeStructured(t, res, &page)
 		return page.Leads
 	}
 

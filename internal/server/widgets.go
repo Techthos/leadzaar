@@ -16,17 +16,38 @@ import (
 
 // Interactive widget UI for the CRUD tools (see .claude/rules/mcp-server.md and
 // docs/SPECIFICATIONS.md "Interactive widget UI"). Widgets are gadget Tables and
-// Forms delivered in **embedded per-call mode** (the community mcp-ui
-// convention): each render is a fresh self-contained HTML document with the
-// call's data baked in (InitialData) and a unique ui:// URI, appended to the
-// tool result's content after the JSON text block. Actions and submits target
-// the normal model-visible tools — the host routes a click through the model as
-// a follow-up turn. The JSON result always stands alone: widget build/render
-// failures are logged to stderr and never fail the tool.
+// Forms following the MCP Apps extension (io.modelcontextprotocol/ui), delivered
+// in **embedded per-call mode**: each render is a fresh self-contained HTML
+// document tagged with the MCP Apps HTML profile (text/html;profile=mcp-app),
+// with the call's data baked in (InitialData) and a unique ui:// URI, appended to
+// the tool result's content after the text/status block. Interactions flow back
+// through the standard App Bridge — a widget action dispatches a tools/call that
+// the host runs directly against this server; a mutating tool returns the
+// refreshed collection under the table's RowsKey in structuredContent so the open
+// widget repaints in place. Every table also sets a LoadTool (its list tool) so a
+// remounted iframe re-hydrates from current data instead of the frozen snapshot.
+// The non-UI result (status text + structuredContent) always stands alone: widget
+// build/render failures are logged to stderr and never fail the tool.
 
 // widgetPageSize is the client-side page size inside a table widget. The server
 // already bounds a list result to 50 rows; this only keeps the iframe short.
 const widgetPageSize = 10
+
+// cardListPageSize is the client-side page size inside a card-list widget. Cards
+// are taller than table rows, so a browse-as-cards view paginates sooner.
+const cardListPageSize = 5
+
+// Each entity table's RowsKey — the structuredContent key its rows ride under.
+// A list tool returns the page under this key, the table's LoadTool re-fetches
+// under it, and a mutating tool returns the refreshed collection under it to
+// drive the standard MCP Apps in-place refresh (ui/notifications/tool-result).
+const (
+	leadsRowsKey     = "leads"
+	contactsRowsKey  = "contacts"
+	dealsRowsKey     = "deals"
+	companiesRowsKey = "companies"
+	offersRowsKey    = "offers"
+)
 
 var (
 	// uiRenderEpoch namespaces this process's render URIs so a restart never
@@ -54,7 +75,7 @@ func embedWidget(res *mcp.CallToolResult, w gadget.Widget) {
 	}
 	res.Content = append(res.Content, mcp.NewEmbeddedResource(mcp.TextResourceContents{
 		URI:      w.Descriptor().URI,
-		MIMEType: "text/html",
+		MIMEType: w.Descriptor().MIMEType, // "text/html;profile=mcp-app" (MCP Apps HTML profile)
 		Text:     doc,
 	}))
 }
@@ -78,6 +99,21 @@ func embedTable(res *mcp.CallToolResult, build func([]map[string]any) *gadget.Ta
 	}
 }
 
+// embedCardList is embedTable for a CardList collection widget.
+func embedCardList(res *mcp.CallToolResult, build func([]map[string]any) *gadget.CardList, items any) {
+	if rows := tableRows(items); rows != nil {
+		embedWidget(res, build(rows))
+	}
+}
+
+// embedCard is embedTable for a single-record Card widget; the card renders
+// rows[0], so items is a one-element slice.
+func embedCard(res *mcp.CallToolResult, build func([]map[string]any) *gadget.Card, items any) {
+	if rows := tableRows(items); rows != nil {
+		embedWidget(res, build(rows))
+	}
+}
+
 // widgetFieldErrors maps a store validation error onto the form field its
 // message names — best-effort substring rules, first match wins; an unmatched
 // message lands on fallback so it is always visible in the form. The plain JSON
@@ -91,6 +127,14 @@ func widgetFieldErrors(err error, fallback string, rules ...[2]string) map[strin
 	}
 	return map[string]string{fallback: msg}
 }
+
+// Create/update forms deliberately set no LoadTool (unlike the tables, which
+// re-hydrate via their list tool). An embedded form is an edit buffer, not a
+// live view: its baked snapshot (the values just submitted or saved) is exactly
+// what should repaint if the host remounts the iframe, and re-fetching from the
+// server would discard in-progress input. A create form has no record to load at
+// all. In-place submit feedback still flows through the standard App Bridge —
+// the handler returns inline field errors under the form's ErrorsKey ("errors").
 
 // formData assembles the InitialData snapshot a form bakes: prefill under
 // "values", inline field errors under "errors".
@@ -138,8 +182,10 @@ func leadStatusBadges() map[string]gadget.BadgeVariant {
 
 func leadsTable(title string, rows []map[string]any) *gadget.Table {
 	return &gadget.Table{
-		URI:   uiURI("leads"),
-		Title: title,
+		URI:      uiURI("leads"),
+		Title:    title,
+		RowsKey:  leadsRowsKey,
+		LoadTool: "list_leads",
 		Columns: []gadget.Column{
 			gadget.Number("id", "ID", "int"),
 			gadget.Text("name", "Name"),
@@ -167,7 +213,7 @@ func leadsTable(title string, rows []map[string]any) *gadget.Table {
 		Filterable:  true,
 		PageSize:    widgetPageSize,
 		Empty:       gadget.EmptyState{Title: "No leads"},
-		InitialData: map[string]any{"rows": rows},
+		InitialData: map[string]any{leadsRowsKey: rows},
 	}
 }
 
@@ -263,45 +309,72 @@ func leadFieldErrors(err error) map[string]string {
 	)
 }
 
-// embedRefreshedLeads embeds the current default first page so a mutating
-// tool's result shows the effect — embedded mode has no rows-refresh
-// round-trip.
-func (h *handlers) embedRefreshedLeads(res *mcp.CallToolResult) {
+// latestLeads returns the default first page of leads for a mutating tool to
+// return under leadsRowsKey (driving the in-place table refresh) and embed as a
+// fallback widget. A query failure is logged and yields nil so the tool result
+// simply omits the refreshed rows rather than failing.
+func (h *handlers) latestLeads() []leadListItem {
 	page, err := h.store.QueryLeads(db.LeadQuery{})
 	if err != nil {
 		log.Printf("widget refresh leads: %v", err)
-		return
+		return nil
 	}
-	embedTable(res, func(rows []map[string]any) *gadget.Table { return leadsTable("Leads", rows) },
-		toLeadListItems(page.Leads))
+	return toLeadListItems(page.Leads)
 }
 
 // --- Contacts ------------------------------------------------------------
 
-func contactsTable(title string, rows []map[string]any) *gadget.Table {
-	return &gadget.Table{
-		URI:   uiURI("contacts"),
-		Title: title,
-		Columns: []gadget.Column{
-			gadget.Number("id", "ID", "int"),
-			gadget.Text("name", "Name"),
-			gadget.Text("email", "Email"),
+// contactCardTemplate is the shared card layout for the contact browse list and
+// the single-contact detail card. Like the company template it drops the long
+// freeform `notes` (the list projection already omits it) and includes the
+// per-card Delete action only in the collection.
+func contactCardTemplate(withActions bool) gadget.CardTemplate {
+	t := gadget.CardTemplate{
+		TitleKey:    "name",
+		SubtitleKey: "email",
+		Fields: []gadget.Column{
 			gadget.Text("phone", "Phone"),
 			gadget.Number("companyId", "Company", "int"),
 			gadget.Date("updatedAt", "Updated", "relative"),
-			gadget.ActionsColumn(
-				gadget.Action{
-					Label: "Delete", Tool: "delete_contact",
-					Args:    map[string]gadget.ArgSource{"id": gadget.FromRow("id")},
-					Confirm: "Delete this contact and all of its deals?",
-					Variant: gadget.VariantDanger,
-				},
-			),
 		},
+	}
+	if withActions {
+		t.Actions = []gadget.Action{{
+			Label: "Delete", Tool: "delete_contact",
+			Args:    map[string]gadget.ArgSource{"id": gadget.FromRow("id")},
+			Confirm: "Delete this contact and all of its deals?",
+			Variant: gadget.VariantDanger,
+		}}
+	}
+	return t
+}
+
+// contactsCardList is the browse/search widget for contacts; see
+// companiesCardList for the shape and the app-template role.
+func contactsCardList(title string, rows []map[string]any) *gadget.CardList {
+	return &gadget.CardList{
+		URI:         uiURI("contacts"),
+		Title:       title,
+		Template:    contactCardTemplate(true),
+		RowsKey:     contactsRowsKey,
+		LoadTool:    "list_contacts",
+		PageSize:    cardListPageSize,
 		Filterable:  true,
-		PageSize:    widgetPageSize,
 		Empty:       gadget.EmptyState{Title: "No contacts"},
-		InitialData: map[string]any{"rows": rows},
+		InitialData: map[string]any{contactsRowsKey: rows},
+	}
+}
+
+// contactCard is the single-record detail widget embedded by get_contact; see
+// companyCard for the no-LoadTool rationale.
+func contactCard(title string, rows []map[string]any) *gadget.Card {
+	return &gadget.Card{
+		URI:         uiURI("contact"),
+		Title:       title,
+		Template:    contactCardTemplate(false),
+		RowsKey:     contactsRowsKey,
+		Empty:       gadget.EmptyState{Title: "No contact"},
+		InitialData: map[string]any{contactsRowsKey: rows},
 	}
 }
 
@@ -364,14 +437,13 @@ func contactFieldErrors(err error) map[string]string {
 	)
 }
 
-func (h *handlers) embedRefreshedContacts(res *mcp.CallToolResult) {
+func (h *handlers) latestContacts() []contactListItem {
 	page, err := h.store.QueryContacts(db.ContactQuery{})
 	if err != nil {
 		log.Printf("widget refresh contacts: %v", err)
-		return
+		return nil
 	}
-	embedTable(res, func(rows []map[string]any) *gadget.Table { return contactsTable("Contacts", rows) },
-		toContactListItems(page.Contacts))
+	return toContactListItems(page.Contacts)
 }
 
 // --- Deals ---------------------------------------------------------------
@@ -388,8 +460,10 @@ func dealStageBadges() map[string]gadget.BadgeVariant {
 
 func dealsTable(title string, rows []map[string]any) *gadget.Table {
 	return &gadget.Table{
-		URI:   uiURI("deals"),
-		Title: title,
+		URI:      uiURI("deals"),
+		Title:    title,
+		RowsKey:  dealsRowsKey,
+		LoadTool: "list_deals",
 		Columns: []gadget.Column{
 			gadget.Number("id", "ID", "int"),
 			gadget.Text("title", "Title"),
@@ -410,7 +484,7 @@ func dealsTable(title string, rows []map[string]any) *gadget.Table {
 		Filterable:  true,
 		PageSize:    widgetPageSize,
 		Empty:       gadget.EmptyState{Title: "No deals"},
-		InitialData: map[string]any{"rows": rows},
+		InitialData: map[string]any{dealsRowsKey: rows},
 	}
 }
 
@@ -479,42 +553,72 @@ func dealFieldErrors(err error) map[string]string {
 	)
 }
 
-func (h *handlers) embedRefreshedDeals(res *mcp.CallToolResult) {
+func (h *handlers) latestDeals() []dealListItem {
 	page, err := h.store.QueryDeals(db.DealQuery{})
 	if err != nil {
 		log.Printf("widget refresh deals: %v", err)
-		return
+		return nil
 	}
-	embedTable(res, func(rows []map[string]any) *gadget.Table { return dealsTable("Deals", rows) },
-		toDealListItems(page.Deals))
+	return toDealListItems(page.Deals)
 }
 
 // --- Companies -----------------------------------------------------------
 
-func companiesTable(title string, rows []map[string]any) *gadget.Table {
-	return &gadget.Table{
-		URI:   uiURI("companies"),
-		Title: title,
-		Columns: []gadget.Column{
-			gadget.Number("id", "ID", "int"),
-			gadget.Text("name", "Name"),
-			gadget.Text("website", "Website"),
-			gadget.Text("industry", "Industry"),
+// companyCardTemplate is the shared card layout for the company browse list and
+// the single-company detail card. It deliberately drops the long freeform
+// `notes` and the `industry` line, keeping only the identifying fields. The
+// per-card Delete action is included only in the collection (withActions), never
+// on the standalone detail card (a detail view is read-only, and its refresh
+// would return a collection the single card cannot represent).
+func companyCardTemplate(withActions bool) gadget.CardTemplate {
+	t := gadget.CardTemplate{
+		TitleKey:    "name",
+		SubtitleKey: "website",
+		Fields: []gadget.Column{
 			gadget.Text("phone", "Phone"),
 			gadget.Date("updatedAt", "Updated", "relative"),
-			gadget.ActionsColumn(
-				gadget.Action{
-					Label: "Delete", Tool: "delete_company",
-					Args:    map[string]gadget.ArgSource{"id": gadget.FromRow("id")},
-					Confirm: "Delete this company? Linked records are unlinked, not deleted.",
-					Variant: gadget.VariantDanger,
-				},
-			),
 		},
+	}
+	if withActions {
+		t.Actions = []gadget.Action{{
+			Label: "Delete", Tool: "delete_company",
+			Args:    map[string]gadget.ArgSource{"id": gadget.FromRow("id")},
+			Confirm: "Delete this company? Linked records are unlinked, not deleted.",
+			Variant: gadget.VariantDanger,
+		}}
+	}
+	return t
+}
+
+// companiesCardList is the browse/search widget for companies: a filterable,
+// paginated grid of company cards. list_companies (and the delete refresh) embed
+// it, and it is the stable app template linked from list_companies.
+func companiesCardList(title string, rows []map[string]any) *gadget.CardList {
+	return &gadget.CardList{
+		URI:         uiURI("companies"),
+		Title:       title,
+		Template:    companyCardTemplate(true),
+		RowsKey:     companiesRowsKey,
+		LoadTool:    "list_companies",
+		PageSize:    cardListPageSize,
 		Filterable:  true,
-		PageSize:    widgetPageSize,
 		Empty:       gadget.EmptyState{Title: "No companies"},
-		InitialData: map[string]any{"rows": rows},
+		InitialData: map[string]any{companiesRowsKey: rows},
+	}
+}
+
+// companyCard is the single-record detail widget embedded by get_company. Like
+// the create/update forms it sets no LoadTool: get_company returns the flat
+// record (not a rows array under companiesRowsKey), so the baked snapshot is what
+// should repaint on remount.
+func companyCard(title string, rows []map[string]any) *gadget.Card {
+	return &gadget.Card{
+		URI:         uiURI("company"),
+		Title:       title,
+		Template:    companyCardTemplate(false),
+		RowsKey:     companiesRowsKey,
+		Empty:       gadget.EmptyState{Title: "No company"},
+		InitialData: map[string]any{companiesRowsKey: rows},
 	}
 }
 
@@ -570,22 +674,23 @@ func companyFieldErrors(err error) map[string]string {
 	return widgetFieldErrors(err, "name", [2]string{"name", "name"})
 }
 
-func (h *handlers) embedRefreshedCompanies(res *mcp.CallToolResult) {
+func (h *handlers) latestCompanies() []companyListItem {
 	page, err := h.store.QueryCompanies(db.CompanyQuery{})
 	if err != nil {
 		log.Printf("widget refresh companies: %v", err)
-		return
+		return nil
 	}
-	embedTable(res, func(rows []map[string]any) *gadget.Table { return companiesTable("Companies", rows) },
-		toCompanyListItems(page.Companies))
+	return toCompanyListItems(page.Companies)
 }
 
 // --- Offers --------------------------------------------------------------
 
 func offersTable(title string, rows []map[string]any) *gadget.Table {
 	return &gadget.Table{
-		URI:   uiURI("offers"),
-		Title: title,
+		URI:      uiURI("offers"),
+		Title:    title,
+		RowsKey:  offersRowsKey,
+		LoadTool: "list_offers",
 		Columns: []gadget.Column{
 			gadget.Number("id", "ID", "int"),
 			gadget.Number("leadId", "Lead", "int"),
@@ -604,7 +709,46 @@ func offersTable(title string, rows []map[string]any) *gadget.Table {
 		Filterable:  true,
 		PageSize:    widgetPageSize,
 		Empty:       gadget.EmptyState{Title: "No offers"},
-		InitialData: map[string]any{"rows": rows},
+		InitialData: map[string]any{offersRowsKey: rows},
+	}
+}
+
+// offerCard is the single-record detail widget embedded by get_offer. Unlike the
+// offer list projection (which drops the long freeform body), the detail card
+// carries the full body and description so an offer can be read in one view. It
+// sets no LoadTool for the same reason as the other detail cards (get_offer
+// returns the flat record, not a rows array under offersRowsKey).
+func offerCard(title string, rows []map[string]any) *gadget.Card {
+	return &gadget.Card{
+		URI:     uiURI("offer"),
+		Title:   title,
+		RowsKey: offersRowsKey,
+		Template: gadget.CardTemplate{
+			TitleKey:    "title",
+			SubtitleKey: "subject",
+			Fields: []gadget.Column{
+				gadget.Number("leadId", "Lead", "int"),
+				gadget.Text("description", "Description"),
+				gadget.Text("body", "Body"),
+				gadget.Date("updatedAt", "Updated", "relative"),
+			},
+		},
+		Empty:       gadget.EmptyState{Title: "No offer"},
+		InitialData: map[string]any{offersRowsKey: rows},
+	}
+}
+
+// offerDetailRow projects a full offer (including the body dropped from the list
+// item) into the card's row shape; keys match offerCard's template fields.
+func offerDetailRow(o models.Offer) map[string]any {
+	return map[string]any{
+		"id":          o.ID,
+		"leadId":      o.LeadID,
+		"title":       o.Title,
+		"subject":     o.Subject,
+		"description": o.Description,
+		"body":        o.Body,
+		"updatedAt":   o.UpdatedAt,
 	}
 }
 
@@ -664,14 +808,13 @@ func offerFieldErrors(err error) map[string]string {
 	)
 }
 
-func (h *handlers) embedRefreshedOffers(res *mcp.CallToolResult) {
+func (h *handlers) latestOffers() []offerListItem {
 	page, err := h.store.QueryOffers(db.OfferQuery{})
 	if err != nil {
 		log.Printf("widget refresh offers: %v", err)
-		return
+		return nil
 	}
-	embedTable(res, func(rows []map[string]any) *gadget.Table { return offersTable("Offers", rows) },
-		toOfferListItems(page.Offers))
+	return toOfferListItems(page.Offers)
 }
 
 // --- Pipeline summary ----------------------------------------------------
@@ -693,10 +836,20 @@ type statusCountRow struct {
 	Count  int    `json:"count"`
 }
 
+// Summary-table RowsKeys. pipeline_summary returns its two flattened row sets
+// under these keys so each read-only table's LoadTool ("pipeline_summary")
+// re-hydrates on remount.
+const (
+	summaryDealRowsKey   = "dealRows"
+	summaryStatusRowsKey = "statusRows"
+)
+
 func summaryDealsTable(rows []map[string]any) *gadget.Table {
 	return &gadget.Table{
-		URI:   uiURI("pipeline-deals"),
-		Title: "Deals by stage",
+		URI:      uiURI("pipeline-deals"),
+		Title:    "Deals by stage",
+		RowsKey:  summaryDealRowsKey,
+		LoadTool: "pipeline_summary",
 		Columns: []gadget.Column{
 			gadget.Badge("stage", "Stage", dealStageBadges()),
 			gadget.Number("count", "Deals", "int"),
@@ -704,28 +857,31 @@ func summaryDealsTable(rows []map[string]any) *gadget.Table {
 			gadget.Number("total", "Total", "decimal:2"),
 		},
 		Empty:       gadget.EmptyState{Title: "No deals"},
-		InitialData: map[string]any{"rows": rows},
+		InitialData: map[string]any{summaryDealRowsKey: rows},
 	}
 }
 
 func summaryLeadsTable(rows []map[string]any) *gadget.Table {
 	return &gadget.Table{
-		URI:   uiURI("pipeline-leads"),
-		Title: "Leads by status",
+		URI:      uiURI("pipeline-leads"),
+		Title:    "Leads by status",
+		RowsKey:  summaryStatusRowsKey,
+		LoadTool: "pipeline_summary",
 		Columns: []gadget.Column{
 			gadget.Badge("status", "Status", leadStatusBadges()),
 			gadget.Number("count", "Leads", "int"),
 		},
 		Empty:       gadget.EmptyState{Title: "No leads"},
-		InitialData: map[string]any{"rows": rows},
+		InitialData: map[string]any{summaryStatusRowsKey: rows},
 	}
 }
 
-// embedPipelineSummary embeds the two read-only summary tables (deals by stage
-// with per-currency totals — never summed across currencies — and leads by
-// status).
-func embedPipelineSummary(res *mcp.CallToolResult, s models.PipelineSummary) {
-	dealRows := make([]stageSummaryRow, 0, len(s.DealsByStage))
+// pipelineSummaryRows flattens a PipelineSummary into the two table row sets:
+// deals by stage (one row per stage-currency pair, or a single zero row for a
+// stage with no valued deals — totals are never summed across currencies) and
+// leads by status.
+func pipelineSummaryRows(s models.PipelineSummary) (dealRows []stageSummaryRow, statusRows []statusCountRow) {
+	dealRows = make([]stageSummaryRow, 0, len(s.DealsByStage))
 	for _, st := range s.DealsByStage {
 		if len(st.Totals) == 0 {
 			dealRows = append(dealRows, stageSummaryRow{ID: string(st.Stage), Stage: string(st.Stage), Count: st.Count})
@@ -738,10 +894,16 @@ func embedPipelineSummary(res *mcp.CallToolResult, s models.PipelineSummary) {
 			})
 		}
 	}
-	leadRows := make([]statusCountRow, 0, len(s.LeadsByStatus))
+	statusRows = make([]statusCountRow, 0, len(s.LeadsByStatus))
 	for _, sc := range s.LeadsByStatus {
-		leadRows = append(leadRows, statusCountRow{ID: string(sc.Status), Status: string(sc.Status), Count: sc.Count})
+		statusRows = append(statusRows, statusCountRow{ID: string(sc.Status), Status: string(sc.Status), Count: sc.Count})
 	}
+	return dealRows, statusRows
+}
+
+// embedPipelineSummary embeds the two read-only summary tables from
+// pre-flattened rows.
+func embedPipelineSummary(res *mcp.CallToolResult, dealRows []stageSummaryRow, statusRows []statusCountRow) {
 	embedTable(res, summaryDealsTable, dealRows)
-	embedTable(res, summaryLeadsTable, leadRows)
+	embedTable(res, summaryLeadsTable, statusRows)
 }

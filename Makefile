@@ -1,4 +1,6 @@
-.PHONY: fmt lint test build tidy check run
+.PHONY: fmt lint test build tidy check run inspect
+
+GO := go
 
 fmt:
 	gofumpt -w .
@@ -10,7 +12,7 @@ test:
 	go test ./... -race -cover
 
 build:
-	go build -o leadzaar .
+	CGO_ENABLED=0 $(GO) build -o bin/leadzaar .
 
 tidy:
 	go mod tidy
@@ -19,3 +21,6 @@ check: fmt tidy lint test
 
 run:
 	go run .
+
+inspect: build
+	npx @modelcontextprotocol/inspector ./bin/leadzaar -mode mcp

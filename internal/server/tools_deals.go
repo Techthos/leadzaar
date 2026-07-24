@@ -52,11 +52,13 @@ func (h *handlers) registerDealTools(s *server.MCPServer) {
 		mcp.WithInputSchema[createDealArgs](),
 	), mcp.NewTypedToolHandler(h.createDeal))
 
-	s.AddTool(mcp.NewTool(
+	listDeals := mcp.NewTool(
 		"list_deals",
 		mcp.WithDescription("List deals (minimal fields; use get_deal for the full record), optionally filtered by stage, contact, and/or substring query, with ordering (updated default/created) and pagination (max page size 50). Returns the page plus total/total_pages/has_more."),
 		mcp.WithInputSchema[listDealsArgs](),
-	), mcp.NewTypedToolHandler(h.listDeals))
+	)
+	listDeals.Meta = uiToolMeta(appDeals) // surfaces list_deals as an MCP App (deals table template)
+	s.AddTool(listDeals, mcp.NewTypedToolHandler(h.listDeals))
 
 	s.AddTool(mcp.NewTool(
 		"get_deal",
@@ -83,14 +85,12 @@ func (h *handlers) createDeal(_ context.Context, _ mcp.CallToolRequest, a create
 		Stage: models.DealStage(a.Stage), Notes: a.Notes,
 	})
 	if err != nil {
-		res, _ := toolErr(err)
-		embedWidget(res, dealForm("create_deal", createDealValues(a), dealFieldErrors(err)))
+		errs := dealFieldErrors(err)
+		res := formErrorResult(errs, err.Error())
+		embedWidget(res, dealForm("create_deal", createDealValues(a), errs))
 		return res, nil
 	}
-	res, err := jsonResult(d)
-	if err != nil {
-		return nil, err
-	}
+	res := okResult(d, fmt.Sprintf("Deal #%d created.", d.ID))
 	embedWidget(res, dealForm("update_deal", dealValues(d), nil))
 	return res, nil
 }
@@ -108,13 +108,10 @@ func (h *handlers) listDeals(_ context.Context, _ mcp.CallToolRequest, a listDea
 	if err != nil {
 		return toolErr(err)
 	}
-	res, err := pageResult("deals", toDealListItems(page.Deals),
+	items := toDealListItems(page.Deals)
+	res := pageResult(dealsRowsKey, listStatus(page.Total, "deal", "deals"), items,
 		page.Page, page.PageSize, page.Total, page.TotalPages, page.HasMore)
-	if err != nil {
-		return nil, err
-	}
-	embedTable(res, func(rows []map[string]any) *gadget.Table { return dealsTable("Deals", rows) },
-		toDealListItems(page.Deals))
+	embedTable(res, func(rows []map[string]any) *gadget.Table { return dealsTable("Deals", rows) }, items)
 	return res, nil
 }
 
@@ -123,10 +120,7 @@ func (h *handlers) getDeal(_ context.Context, _ mcp.CallToolRequest, a idArg) (*
 	if err != nil {
 		return toolErr(err)
 	}
-	res, err := jsonResult(d)
-	if err != nil {
-		return nil, err
-	}
+	res := okResult(d, fmt.Sprintf("Deal #%d.", d.ID))
 	embedTable(res, func(rows []map[string]any) *gadget.Table {
 		return dealsTable(fmt.Sprintf("Deal #%d", d.ID), rows)
 	}, []dealListItem{toDealListItem(d)})
@@ -149,14 +143,12 @@ func (h *handlers) updateDeal(_ context.Context, _ mcp.CallToolRequest, a update
 	}
 	updated, err := h.store.UpdateDeal(d)
 	if err != nil {
-		res, _ := toolErr(err)
-		embedWidget(res, dealForm("update_deal", dealValues(d), dealFieldErrors(err)))
+		errs := dealFieldErrors(err)
+		res := formErrorResult(errs, err.Error())
+		embedWidget(res, dealForm("update_deal", dealValues(d), errs))
 		return res, nil
 	}
-	res, err := jsonResult(updated)
-	if err != nil {
-		return nil, err
-	}
+	res := okResult(updated, fmt.Sprintf("Deal #%d updated.", updated.ID))
 	embedWidget(res, dealForm("update_deal", dealValues(updated), nil))
 	return res, nil
 }
@@ -165,28 +157,40 @@ func (h *handlers) deleteDeal(_ context.Context, _ mcp.CallToolRequest, a idArg)
 	if err := h.store.DeleteDeal(a.ID); err != nil {
 		return toolErr(err)
 	}
-	res, err := jsonResult(map[string]any{"deleted": a.ID})
-	if err != nil {
-		return nil, err
-	}
-	h.embedRefreshedDeals(res)
+	items := h.latestDeals()
+	res := okResult(map[string]any{"deleted": a.ID, dealsRowsKey: items},
+		fmt.Sprintf("Deal #%d deleted.", a.ID))
+	embedTable(res, func(rows []map[string]any) *gadget.Table { return dealsTable("Deals", rows) }, items)
 	return res, nil
 }
 
 func (h *handlers) registerSummaryTool(s *server.MCPServer) {
-	s.AddTool(mcp.NewTool(
+	summaryTool := mcp.NewTool(
 		"pipeline_summary",
 		mcp.WithDescription("Funnel + pipeline aggregate: deal counts and per-currency value totals by stage, plus lead counts by status."),
-	), func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	)
+	summaryTool.Meta = uiToolMeta(appPipeline) // surfaces pipeline_summary as an MCP App (deals-by-stage table template)
+	s.AddTool(summaryTool, func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		summary, err := h.store.PipelineSummary()
 		if err != nil {
 			return toolErr(err)
 		}
-		res, err := jsonResult(summary)
-		if err != nil {
-			return nil, err
-		}
-		embedPipelineSummary(res, summary)
+		dealRows, statusRows := pipelineSummaryRows(summary)
+		// The two summary tables re-hydrate (LoadTool: pipeline_summary) from the
+		// flattened rows carried under their RowsKeys, so the payload embeds the
+		// summary (model contract) plus dealRows/statusRows.
+		res := okResult(summaryOutput{PipelineSummary: summary, DealRows: dealRows, StatusRows: statusRows},
+			"Pipeline summary.")
+		embedPipelineSummary(res, dealRows, statusRows)
 		return res, nil
 	})
+}
+
+// summaryOutput is pipeline_summary's structuredContent: the PipelineSummary
+// (model contract) plus the two flattened table row sets under the summary
+// tables' RowsKeys, so each read-only table's LoadTool re-hydrates on remount.
+type summaryOutput struct {
+	models.PipelineSummary
+	DealRows   []stageSummaryRow `json:"dealRows"`
+	StatusRows []statusCountRow  `json:"statusRows"`
 }

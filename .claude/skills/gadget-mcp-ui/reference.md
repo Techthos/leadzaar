@@ -65,6 +65,8 @@ type Table struct {
     Empty       EmptyState
 
     InitialData map[string]any         // optional structuredContent-shaped snapshot baked into the document
+    LoadTool    string                 // read tool the runtime calls once on load to re-fetch rows under RowsKey, replacing the baked snapshot (a reloaded widget shows current data, not the render-time snapshot)
+    LoadArgs    map[string]any         // optional static args passed to LoadTool
     Theme       *theme.Theme
     UI          *uispec.ResourceUIMeta // overrides resource _meta.ui (CSP, permissions, prefersBorder)
 }
@@ -133,6 +135,8 @@ type Form struct {
     ErrorsKey  string  // structuredContent key with {"field": "message"} errors. Default "errors"
 
     InitialData map[string]any // e.g. {"values": {...}} for a pre-filled edit form
+    LoadTool    string         // read tool the runtime calls once on load to re-fetch prefill under PrefillKey, replacing the baked snapshot
+    LoadArgs    map[string]any // optional static args passed to LoadTool
     Theme       *theme.Theme
     UI          *uispec.ResourceUIMeta
 }
@@ -375,36 +379,42 @@ h := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return serve
 http.ListenAndServe(":8080", h)
 ```
 
-## Embedded per-call mode (legacy mcp-ui hosts, e.g. LibreChat)
+## Embedded per-call mode (result-embedded MCP Apps widgets)
 
-Hosts that render the community **mcp-ui** standard but not MCP Apps never fetch `ui://`
-template resources or push tool results. Consume gadget differently there:
+Instead of registering a `ui://` template resource once and linking tools via
+`_meta.ui.resourceUri`, deliver a fresh self-contained document in **each tool result**. This is
+what this template's binzaar server uses; interactions still flow through the standard MCP Apps
+**App Bridge**.
 
-- Build the widget **per call**: bake the call's data via `InitialData` (the runtime paints it
-  before, and without, any host handshake) and give every render a **unique URI**
-  (e.g. `ui://app/kind/<unixnano>` — mcp-ui hosts key renders by URI).
-- Append the rendered `Document()` to the tool result's `content` **after** the JSON text block,
-  as an embedded resource with `mimeType: "text/html"` (not the mcp-app profile). With
-  mark3labs/mcp-go: `res.Content = append(res.Content, mcp.NewEmbeddedResource(
-  mcp.TextResourceContents{URI: uri, MIMEType: "text/html", Text: doc}))`.
-- **Actions fall back automatically** (gadget runtime): until an MCP Apps host is confirmed
-  (`ui/initialize` answered or any host→view method seen), `callTool` posts the mcp-ui message
-  `{type:"tool", messageId, payload:{toolName, params}}` and `openLink` posts
-  `{type:"link", payload:{url}}`. A matching `ui-message-response` becomes the tool result
-  (`payload.error` rejects); otherwise the call resolves fire-and-forget after
-  `uiResponseTimeoutMs` (default 3000 ms) with `dispatched: true` — the table shows the dispatch
-  text as a transient status, the form shows it instead of `SuccessMessage`.
-- **The iframe auto-resizes** (gadget runtime): size reporting starts at first paint (not gated
-  on the handshake) and, until a host is confirmed, also posts the mcp-ui
-  `{type:"ui-size-change", payload:{height}}` message — auto-resizing hosts grow the iframe so
-  the widget is always fully visible, never internally scrolled (`width` omitted so the
-  responsive CSS width wins; the document resets `body{margin:0;padding:8px}` so
-  `body.scrollHeight` measures true content height).
-- Consequences: point actions/submits at **model-visible** tools (the host routes the click
-  through the model; `_meta.ui.visibility` is not understood), don't register app-only `ui_*`
-  helper tools, and there is no rows-refresh round-trip — embed a **freshly rendered widget with
-  the refreshed dataset** in each mutating tool's result instead. The JSON result must stand
-  alone: log widget build/render failures to stderr and never fail the tool over UI.
+- Build the widget **per call**: bake the call's data via `InitialData` (the runtime paints it at
+  first render, before any host handshake) and give every render a **unique URI**
+  (e.g. `ui://app/kind/<unixnano>` — hosts key renders by URI).
+- **Set `LoadTool` so a reloaded snapshot re-hydrates.** The baked `InitialData` is frozen at render
+  time; if the host reloads or remounts the iframe the widget would repaint that stale snapshot. Give
+  each widget a `LoadTool` (a read tool returning the data under the widget's `RowsKey`/`PrefillKey`)
+  and the runtime calls it once after the handshake to replace the snapshot with current data.
+- Append the rendered `Document()` to the tool result's `content` **after** the JSON text block, as
+  an embedded resource carrying the **MCP Apps HTML profile** `mimeType: "text/html;profile=mcp-app"`.
+  With mark3labs/mcp-go: `res.Content = append(res.Content, mcp.NewEmbeddedResource(
+  mcp.TextResourceContents{URI: uri, MIMEType: "text/html;profile=mcp-app", Text: doc}))`.
+- **Interactions use the standard App Bridge JSON-RPC** (gadget runtime): once the host attaches its
+  App Bridge (`ui/initialize` handshake), a widget action calls **`tools/call`** (the bridge runs
+  the named tool directly against the server and returns the result to the widget), and a link calls
+  **`ui/open-link`**. If a tool the widget called returns `structuredContent` with `RowsKey`, the
+  table re-renders with those rows and clears the selection; otherwise the call resolves and the
+  refreshed widget arrives as the next embedded result. Do not hand-author postMessage payloads or
+  any text-sentinel envelope — configure actions via gadget's `Action`/`Submit` API.
+- **The iframe auto-resizes** (gadget runtime): size reporting starts at first paint; the widget
+  reports its content height and the bridge applies it via **`ui/notifications/size-changed`**, so
+  hosts grow the iframe and the widget is never internally scrolled (`width` omitted so the
+  responsive CSS width wins; the document resets `body{margin:0;padding:8px}` so `body.scrollHeight`
+  measures true content height).
+- Consequences: point actions/submits at **model-visible** tools (the per-call document is not a
+  registered template with linked app-only tools, so don't register app-only `ui_*` helpers or rely
+  on `_meta.ui.visibility` here), and there is no separate rows-refresh round-trip — embed a
+  **freshly rendered widget with the refreshed dataset** in each mutating tool's result. The JSON
+  result must stand alone: log widget build/render failures to stderr and never fail the tool over
+  UI.
 
 ## Manual wiring (any other Go MCP SDK, e.g. mark3labs/mcp-go)
 

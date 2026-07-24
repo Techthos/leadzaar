@@ -48,3 +48,9 @@ paths:
 - If a project genuinely needs cgo (e.g. `mattn/go-sqlite3`), do not silently force
   `CGO_ENABLED=0` — prefer a pure-Go replacement (e.g. `modernc.org/sqlite`), or build against
   musl and document the exception with a comment in the Makefile.
+
+
+## MCP / MCP-Apps inspection
+
+
+- always profile a makefile target using: `npx @modelcontextprotocol/inspector <bin mcp>` to inspect the mcp capabilities and ui elements

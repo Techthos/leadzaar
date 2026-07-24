@@ -50,11 +50,13 @@ func (h *handlers) registerContactTools(s *server.MCPServer) {
 		mcp.WithInputSchema[createContactArgs](),
 	), mcp.NewTypedToolHandler(h.createContact))
 
-	s.AddTool(mcp.NewTool(
+	listContacts := mcp.NewTool(
 		"list_contacts",
 		mcp.WithDescription("List or search contacts (minimal fields; use get_contact for the full record) by query, exact email, or tag, with ordering (updated default/created) and pagination (max page size 50). Returns the page plus total/total_pages/has_more."),
 		mcp.WithInputSchema[listContactsArgs](),
-	), mcp.NewTypedToolHandler(h.listContacts))
+	)
+	listContacts.Meta = uiToolMeta(appContacts) // surfaces list_contacts as an MCP App (contacts table template)
+	s.AddTool(listContacts, mcp.NewTypedToolHandler(h.listContacts))
 
 	s.AddTool(mcp.NewTool(
 		"get_contact",
@@ -80,14 +82,12 @@ func (h *handlers) createContact(_ context.Context, _ mcp.CallToolRequest, a cre
 		Name: a.Name, CompanyID: a.CompanyID, Email: a.Email, Phone: a.Phone, Tags: a.Tags, Notes: a.Notes,
 	})
 	if err != nil {
-		res, _ := toolErr(err)
-		embedWidget(res, contactForm("create_contact", createContactValues(a), contactFieldErrors(err)))
+		errs := contactFieldErrors(err)
+		res := formErrorResult(errs, err.Error())
+		embedWidget(res, contactForm("create_contact", createContactValues(a), errs))
 		return res, nil
 	}
-	res, err := jsonResult(c)
-	if err != nil {
-		return nil, err
-	}
+	res := okResult(c, fmt.Sprintf("Contact #%d created.", c.ID))
 	embedWidget(res, contactForm("update_contact", contactValues(c), nil))
 	return res, nil
 }
@@ -105,13 +105,10 @@ func (h *handlers) listContacts(_ context.Context, _ mcp.CallToolRequest, a list
 	if err != nil {
 		return toolErr(err)
 	}
-	res, err := pageResult("contacts", toContactListItems(page.Contacts),
+	items := toContactListItems(page.Contacts)
+	res := pageResult(contactsRowsKey, listStatus(page.Total, "contact", "contacts"), items,
 		page.Page, page.PageSize, page.Total, page.TotalPages, page.HasMore)
-	if err != nil {
-		return nil, err
-	}
-	embedTable(res, func(rows []map[string]any) *gadget.Table { return contactsTable("Contacts", rows) },
-		toContactListItems(page.Contacts))
+	embedCardList(res, func(rows []map[string]any) *gadget.CardList { return contactsCardList("Contacts", rows) }, items)
 	return res, nil
 }
 
@@ -120,12 +117,9 @@ func (h *handlers) getContact(_ context.Context, _ mcp.CallToolRequest, a idArg)
 	if err != nil {
 		return toolErr(err)
 	}
-	res, err := jsonResult(c)
-	if err != nil {
-		return nil, err
-	}
-	embedTable(res, func(rows []map[string]any) *gadget.Table {
-		return contactsTable(fmt.Sprintf("Contact #%d", c.ID), rows)
+	res := okResult(c, fmt.Sprintf("Contact #%d.", c.ID))
+	embedCard(res, func(rows []map[string]any) *gadget.Card {
+		return contactCard(fmt.Sprintf("Contact #%d", c.ID), rows)
 	}, []contactListItem{toContactListItem(c)})
 	return res, nil
 }
@@ -145,14 +139,12 @@ func (h *handlers) updateContact(_ context.Context, _ mcp.CallToolRequest, a upd
 	}
 	updated, err := h.store.UpdateContact(c)
 	if err != nil {
-		res, _ := toolErr(err)
-		embedWidget(res, contactForm("update_contact", contactValues(c), contactFieldErrors(err)))
+		errs := contactFieldErrors(err)
+		res := formErrorResult(errs, err.Error())
+		embedWidget(res, contactForm("update_contact", contactValues(c), errs))
 		return res, nil
 	}
-	res, err := jsonResult(updated)
-	if err != nil {
-		return nil, err
-	}
+	res := okResult(updated, fmt.Sprintf("Contact #%d updated.", updated.ID))
 	embedWidget(res, contactForm("update_contact", contactValues(updated), nil))
 	return res, nil
 }
@@ -162,10 +154,10 @@ func (h *handlers) deleteContact(_ context.Context, _ mcp.CallToolRequest, a idA
 	if err != nil {
 		return toolErr(err)
 	}
-	res, err := jsonResult(map[string]any{"deleted": a.ID, "deleted_deal_ids": deletedDeals})
-	if err != nil {
-		return nil, err
-	}
-	h.embedRefreshedContacts(res)
+	items := h.latestContacts()
+	res := okResult(map[string]any{
+		"deleted": a.ID, "deleted_deal_ids": deletedDeals, contactsRowsKey: items,
+	}, fmt.Sprintf("Contact #%d deleted.", a.ID))
+	embedCardList(res, func(rows []map[string]any) *gadget.CardList { return contactsCardList("Contacts", rows) }, items)
 	return res, nil
 }

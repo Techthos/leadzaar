@@ -48,11 +48,13 @@ func (h *handlers) registerOfferTools(s *server.MCPServer) {
 		mcp.WithInputSchema[createOfferArgs](),
 	), mcp.NewTypedToolHandler(h.createOffer))
 
-	s.AddTool(mcp.NewTool(
+	listOffers := mcp.NewTool(
 		"list_offers",
 		mcp.WithDescription("List offers (minimal fields; use get_offer for the full record incl. body), optionally filtered by owning lead and/or substring query, with ordering (updated default/created) and pagination (max page size 50). Returns the page plus total/total_pages/has_more."),
 		mcp.WithInputSchema[listOffersArgs](),
-	), mcp.NewTypedToolHandler(h.listOffers))
+	)
+	listOffers.Meta = uiToolMeta(appOffers) // surfaces list_offers as an MCP App (offers table template)
+	s.AddTool(listOffers, mcp.NewTypedToolHandler(h.listOffers))
 
 	s.AddTool(mcp.NewTool(
 		"get_offer",
@@ -78,14 +80,12 @@ func (h *handlers) createOffer(_ context.Context, _ mcp.CallToolRequest, a creat
 		LeadID: a.LeadID, Title: a.Title, Description: a.Description, Subject: a.Subject, Body: a.Body,
 	})
 	if err != nil {
-		res, _ := toolErr(err)
-		embedWidget(res, offerForm("create_offer", createOfferValues(a), offerFieldErrors(err)))
+		errs := offerFieldErrors(err)
+		res := formErrorResult(errs, err.Error())
+		embedWidget(res, offerForm("create_offer", createOfferValues(a), errs))
 		return res, nil
 	}
-	res, err := jsonResult(o)
-	if err != nil {
-		return nil, err
-	}
+	res := okResult(o, fmt.Sprintf("Offer #%d created.", o.ID))
 	embedWidget(res, offerForm("update_offer", offerValues(o), nil))
 	return res, nil
 }
@@ -102,13 +102,10 @@ func (h *handlers) listOffers(_ context.Context, _ mcp.CallToolRequest, a listOf
 	if err != nil {
 		return toolErr(err)
 	}
-	res, err := pageResult("offers", toOfferListItems(page.Offers),
+	items := toOfferListItems(page.Offers)
+	res := pageResult(offersRowsKey, listStatus(page.Total, "offer", "offers"), items,
 		page.Page, page.PageSize, page.Total, page.TotalPages, page.HasMore)
-	if err != nil {
-		return nil, err
-	}
-	embedTable(res, func(rows []map[string]any) *gadget.Table { return offersTable("Offers", rows) },
-		toOfferListItems(page.Offers))
+	embedTable(res, func(rows []map[string]any) *gadget.Table { return offersTable("Offers", rows) }, items)
 	return res, nil
 }
 
@@ -117,13 +114,10 @@ func (h *handlers) getOffer(_ context.Context, _ mcp.CallToolRequest, a idArg) (
 	if err != nil {
 		return toolErr(err)
 	}
-	res, err := jsonResult(o)
-	if err != nil {
-		return nil, err
-	}
-	embedTable(res, func(rows []map[string]any) *gadget.Table {
-		return offersTable(fmt.Sprintf("Offer #%d", o.ID), rows)
-	}, []offerListItem{toOfferListItem(o)})
+	res := okResult(o, fmt.Sprintf("Offer #%d.", o.ID))
+	embedCard(res, func(rows []map[string]any) *gadget.Card {
+		return offerCard(fmt.Sprintf("Offer #%d", o.ID), rows)
+	}, []map[string]any{offerDetailRow(o)})
 	return res, nil
 }
 
@@ -139,14 +133,12 @@ func (h *handlers) updateOffer(_ context.Context, _ mcp.CallToolRequest, a updat
 	setIf(&o.Body, a.Body)
 	updated, err := h.store.UpdateOffer(o)
 	if err != nil {
-		res, _ := toolErr(err)
-		embedWidget(res, offerForm("update_offer", offerValues(o), offerFieldErrors(err)))
+		errs := offerFieldErrors(err)
+		res := formErrorResult(errs, err.Error())
+		embedWidget(res, offerForm("update_offer", offerValues(o), errs))
 		return res, nil
 	}
-	res, err := jsonResult(updated)
-	if err != nil {
-		return nil, err
-	}
+	res := okResult(updated, fmt.Sprintf("Offer #%d updated.", updated.ID))
 	embedWidget(res, offerForm("update_offer", offerValues(updated), nil))
 	return res, nil
 }
@@ -155,10 +147,9 @@ func (h *handlers) deleteOffer(_ context.Context, _ mcp.CallToolRequest, a idArg
 	if err := h.store.DeleteOffer(a.ID); err != nil {
 		return toolErr(err)
 	}
-	res, err := jsonResult(map[string]any{"deleted": a.ID})
-	if err != nil {
-		return nil, err
-	}
-	h.embedRefreshedOffers(res)
+	items := h.latestOffers()
+	res := okResult(map[string]any{"deleted": a.ID, offersRowsKey: items},
+		fmt.Sprintf("Offer #%d deleted.", a.ID))
+	embedTable(res, func(rows []map[string]any) *gadget.Table { return offersTable("Offers", rows) }, items)
 	return res, nil
 }

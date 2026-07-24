@@ -89,31 +89,100 @@ Distinguish the two failure modes:
 
 Build success results with: `mcp.NewToolResultText(...)`, `mcp.NewToolResultJSON(v)`, or `mcp.NewToolResultStructured(v, fallbackText)` (structured output + plain-text fallback for older clients).
 
-## Interactive UI for CRUD tools — embedded gadget widgets
+## Interactive UI for CRUD tools — MCP Apps widgets
 
 Every CRUD tool (create/read/update/delete over a domain entity) also ships an **interactive UI
 version** — a widget built with `github.com/techthos/gadget` — not just a text/JSON result.
 **Invoke the `gadget-mcp-ui` skill before writing any widget code**; the skill and its
 `reference.md` are the source of truth for the gadget API — do not restate or improvise it here.
 
-Widgets are delivered **embedded per call** (the community mcp-ui convention, rendered by hosts
-like LibreChat; gadget's runtime falls back to the mcp-ui action protocol automatically when no
-MCP Apps host answers):
+Widgets follow the **MCP Apps extension** ([`io.modelcontextprotocol/ui`](https://modelcontextprotocol.io/extensions/apps/overview),
+spec version `2026-01-26`): a self-contained HTML document tagged with the **MCP Apps HTML profile**
+(`text/html;profile=mcp-app`) that the host renders in a sandboxed iframe and drives through the
+standard **App Bridge** (`@modelcontextprotocol/ext-apps`) over `postMessage`. Do **not** invent a
+custom UI-event channel and do **not** inject chat prompts (no `postMessage`-a-prompt fallback):
+interactions flow back only as the standard MCP Apps JSON-RPC methods below.
 
-- Build the widget **per call** with the data baked in (`InitialData`) and a **unique `ui://` URI
-  per render**; append the rendered `Document()` to the tool result's `content` as an embedded
-  resource (`mcp.NewEmbeddedResource(mcp.TextResourceContents{URI, MIMEType: "text/html", Text})`)
-  **after** the JSON text block. The JSON result must always stand alone — widget build/render
-  failures are logged to stderr and never fail the tool.
-- **Table** for list/read output, **Form** for create/update input (prefill via baked `values`,
-  inline field errors under `errors` keyed by field name).
-- Actions and submits target the **normal model-visible tools** — in an mcp-ui host a click
-  becomes a follow-up turn where the model runs that tool. Mutating tools embed the **refreshed
-  dataset's widget** in their result so the effect is visible.
+### Discovery — the tool MUST carry `_meta.ui.resourceUri`
+
+**A host discovers an MCP App by scanning tool definitions for `_meta.ui.resourceUri`, not by
+inspecting tool results.** A tool whose *definition* lacks that meta is invisible as an app no matter
+what its result embeds — the MCP Apps inspector reports *"No MCP Apps available. Apps are tools that
+include a `_meta.ui.resourceUri`"*. A widget that lives only as an embedded per-call resource in the
+result is therefore never discovered. Register widgets the **spec-canonical** way:
+
+1. **Register one stable `ui://` template resource per widget**, rendered once and served from
+   memory. Use gadget's `Descriptor()` for the URI/title/mimeType and `Document()` for the HTML:
+   ```go
+   d := w.Descriptor()      // d.URI, d.Title, d.MIMEType == "text/html;profile=mcp-app"
+   doc, _ := w.Document()   // rendered once (validates); returned verbatim by resources/read
+   s.AddResource(mcp.NewResource(d.URI, d.Title, mcp.WithMIMEType(d.MIMEType)), serveDoc(doc))
+   ```
+   The URI is **stable and one per widget kind** (`ui://binzaar/catalog`, `ui://binzaar/installed`,
+   `ui://binzaar/config`) — **never** a per-render `unixnano` URI, because both the resource and the
+   tool link point at it.
+2. **Link every tool that renders the widget by setting its `_meta.ui.resourceUri`** to that same
+   stable URI. gadget hands you the exact meta via `ToolMeta()` (`{"ui":{"resourceUri": d.URI}}`);
+   attach it before registering (mark3labs/mcp-go: `mcp.Tool.Meta` marshals to `_meta`):
+   ```go
+   tool := mcp.NewTool("list_catalog", mcp.WithDescription("..."))
+   tool.Meta = mcp.NewMetaFromMap(w.ToolMeta())
+   s.AddTool(tool, h.listCatalog)
+   ```
+   Advertise the `io.modelcontextprotocol/ui` extension in the server's capabilities where the SDK
+   exposes it, so the host negotiates the App Bridge.
+
+The host fetches the template with `resources/read`, renders it in the iframe, then hydrates it from
+the tool result: the **document** comes from the resource, the **data** flows through
+`structuredContent` — never bake the data into the registered HTML.
+
+- **Table** for list/read output, **Form** for create/update input (prefill via the form's
+  `PrefillKey`, inline field errors under `ErrorsKey` keyed by field name).
+- **The result carries the data; the resource carries the document.** Build results with
+  `mcp.NewToolResultStructured(payload, "Installed owner/name v1.2.3")`: `payload` lands in
+  `structuredContent` under the widget's key (a table's `RowsKey`, a form's `PrefillKey`), and the
+  short sentence is the human status line the runtime shows as the banner. **Read/list tools use the
+  same status-line form** (e.g. `mcp.NewToolResultStructured(catalogOutput{Apps: rows}, "5 apps in
+  the catalog.")`) — a raw-JSON text block flashes in the host before the widget paints. Reserve
+  `mcp.NewToolResultJSON` for tools with **no** widget (e.g. `app_details`, `list_releases`), where
+  the JSON text block is the only output.
+- Actions and submits target the **normal model-visible tools**; a widget click/submit dispatches a
+  standard **`tools/call`** over the App Bridge that the host runs directly against this server
+  (links use **`ui/open-link`**, iframe height is applied via **`ui/notifications/size-changed`**).
+- **In-place refresh is the standard tool-result push — not a chat prompt, not a static snapshot.**
+  When a widget's `tools/call` completes, the host sends that result back to the same widget via
+  **`ui/notifications/tool-result`**, and the gadget runtime re-renders the widget from the result's
+  `structuredContent`: a table repaints its rows when `structuredContent` carries that table's
+  **`RowsKey`** (the fresh rows array), a form re-applies fields from its **`PrefillKey`** (and
+  inline errors from its `ErrorsKey`). So a mutating tool must return the **refreshed collection
+  under the target widget's key** (e.g. an install action surfaced on a `RowsKey: "apps"` catalog
+  table returns `{"apps": <refreshed rows>}`), or the visible widget goes stale even though the tool
+  succeeded.
+- **Set a `LoadTool` on every widget so a fresh mount hydrates.** The registered template ships no
+  baked data, and the host may reload or remount the iframe (a new turn, a message-list re-render)
+  before any result arrives. A widget's `LoadTool` is a read tool the gadget runtime calls once on
+  load (after the App Bridge handshake) to fetch current data — the catalog table loads
+  `list_catalog`, the installed table `list_installed`, the config form `get_config`. The load tool
+  must return its data under the widget's key: a table's `RowsKey` (a plain list tool already fits),
+  a form's `PrefillKey` (so the form's read tool must return that key — e.g. `get_config` returns
+  `values`, not only `config`).
 - **Destructive actions (delete)**: table row actions with `Action.Confirm` — the sandboxed
   iframe has no native `confirm()`/`alert()`.
+- **Optional fallback — embed the per-call document too.** For hosts that render a result-embedded
+  widget rather than the registered template, you *may also* append the freshly rendered `Document()`
+  to the result's `content` **after** the text block
+  (`mcp.NewEmbeddedResource(mcp.TextResourceContents{URI: d.URI, MIMEType: "text/html;profile=mcp-app", Text: doc})`).
+  This is a supplement, **not** the discovery mechanism — the tool's `_meta.ui.resourceUri` is what
+  makes the app visible. The text + `structuredContent` result must always stand alone; widget
+  build/render failures are logged to stderr and never fail the tool.
 - New or changed widgets and tools are product-surface changes → update `docs/SPECIFICATIONS.md`
   in the **same commit** (`specification-rules.md`).
+
+Configure widget actions declaratively through gadget's `Action`/`Submit` API (which name the
+target tool and its argument sources) — the gadget runtime speaks the MCP Apps App Bridge protocol
+for you. Never hand-author postMessage payloads or text-sentinel envelopes in widget HTML. The full
+host-side contract (method surface, rendering, refresh loop) is documented in
+`docs/mcp-apps-host-guide.md`.
 
 ## Resources
 
@@ -165,6 +234,11 @@ Test handlers through the in-process client (`client.NewInProcessClient(s)`) so 
 4. User/input errors → `NewToolResultError(...), nil`; infrastructure errors → `nil, err`.
 5. Enable the matching capability in `NewMCPServer` and confirm `WithRecovery()` is set.
 6. Add an in-process client test.
-7. CRUD tool? Ship its gadget widget UI (per-call embedded Table/Form, actions targeting the
-   model-visible tools) via the `gadget-mcp-ui` skill, and update `docs/SPECIFICATIONS.md` in the
+7. CRUD tool? Ship its gadget widget UI via the `gadget-mcp-ui` skill: register a **stable `ui://`
+   template resource** and set the rendering tool's **`_meta.ui.resourceUri`** to it (this is what
+   makes the app discoverable — a tool without it never appears in an MCP Apps host), with a
+   `LoadTool` and actions targeting the model-visible tools; update `docs/SPECIFICATIONS.md` in the
    same commit.
+8. Widget interactions flow through the standard MCP Apps App Bridge (`tools/call`, `ui/open-link`,
+   `ui/notifications/size-changed`) — configure them via gadget's `Action`/`Submit` API, never a
+   hand-authored postMessage payload or text-sentinel envelope.

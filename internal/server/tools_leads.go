@@ -73,11 +73,13 @@ func (h *handlers) registerLeadTools(s *server.MCPServer) {
 		mcp.WithInputSchema[createLeadArgs](),
 	), mcp.NewTypedToolHandler(h.createLead))
 
-	s.AddTool(mcp.NewTool(
+	listLeads := mcp.NewTool(
 		"list_leads",
 		mcp.WithDescription("List leads (minimal fields; use get_lead for the full record) with optional status and availability filters, substring search, ordering (updated default/created/quality/unavailable-until), and pagination (max page size 50). Returns the page plus total/total_pages/has_more. To find who is ready for a follow-up now, filter availability=available; to see who is still away and when they return, use availability=unavailable with sort_by=unavailable-until and order=asc."),
 		mcp.WithInputSchema[listLeadsArgs](),
-	), mcp.NewTypedToolHandler(h.listLeads))
+	)
+	listLeads.Meta = uiToolMeta(appLeads) // surfaces list_leads as an MCP App (leads table template)
+	s.AddTool(listLeads, mcp.NewTypedToolHandler(h.listLeads))
 
 	s.AddTool(mcp.NewTool(
 		"get_lead",
@@ -107,9 +109,7 @@ func (h *handlers) registerLeadTools(s *server.MCPServer) {
 func (h *handlers) createLead(_ context.Context, _ mcp.CallToolRequest, a createLeadArgs) (*mcp.CallToolResult, error) {
 	unavailableUntil, err := models.ParseDate(a.UnavailableUntil)
 	if err != nil {
-		res, _ := toolErr(err)
-		embedWidget(res, leadForm("create_lead", createLeadValues(a), leadFieldErrors(err)))
-		return res, nil
+		return h.leadCreateError(a, err), nil
 	}
 	lead, err := h.store.CreateLead(models.Lead{
 		Name: a.Name, CompanyID: a.CompanyID, Email: a.Email, Phone: a.Phone,
@@ -117,16 +117,21 @@ func (h *handlers) createLead(_ context.Context, _ mcp.CallToolRequest, a create
 		UnavailableUntil: unavailableUntil,
 	})
 	if err != nil {
-		res, _ := toolErr(err)
-		embedWidget(res, leadForm("create_lead", createLeadValues(a), leadFieldErrors(err)))
-		return res, nil
+		return h.leadCreateError(a, err), nil
 	}
-	res, err := jsonResult(lead)
-	if err != nil {
-		return nil, err
-	}
+	res := okResult(lead, fmt.Sprintf("Lead #%d created.", lead.ID))
 	embedWidget(res, leadForm("update_lead", leadValues(lead), nil))
 	return res, nil
+}
+
+// leadCreateError builds the validation-failure result for create_lead: field
+// errors in structuredContent plus the retry create form with the submitted
+// values and the error mapped onto its field.
+func (h *handlers) leadCreateError(a createLeadArgs, err error) *mcp.CallToolResult {
+	errs := leadFieldErrors(err)
+	res := formErrorResult(errs, err.Error())
+	embedWidget(res, leadForm("create_lead", createLeadValues(a), errs))
+	return res
 }
 
 func (h *handlers) listLeads(_ context.Context, _ mcp.CallToolRequest, a listLeadsArgs) (*mcp.CallToolResult, error) {
@@ -142,13 +147,10 @@ func (h *handlers) listLeads(_ context.Context, _ mcp.CallToolRequest, a listLea
 	if err != nil {
 		return toolErr(err)
 	}
-	res, err := pageResult("leads", toLeadListItems(page.Leads),
+	items := toLeadListItems(page.Leads)
+	res := pageResult(leadsRowsKey, listStatus(page.Total, "lead", "leads"), items,
 		page.Page, page.PageSize, page.Total, page.TotalPages, page.HasMore)
-	if err != nil {
-		return nil, err
-	}
-	embedTable(res, func(rows []map[string]any) *gadget.Table { return leadsTable("Leads", rows) },
-		toLeadListItems(page.Leads))
+	embedTable(res, func(rows []map[string]any) *gadget.Table { return leadsTable("Leads", rows) }, items)
 	return res, nil
 }
 
@@ -157,10 +159,7 @@ func (h *handlers) getLead(_ context.Context, _ mcp.CallToolRequest, a idArg) (*
 	if err != nil {
 		return toolErr(err)
 	}
-	res, err := jsonResult(lead)
-	if err != nil {
-		return nil, err
-	}
+	res := okResult(lead, fmt.Sprintf("Lead #%d.", lead.ID))
 	embedTable(res, func(rows []map[string]any) *gadget.Table {
 		return leadsTable(fmt.Sprintf("Lead #%d", lead.ID), rows)
 	}, []leadListItem{toLeadListItem(lead)})
@@ -197,31 +196,39 @@ func (h *handlers) updateLead(_ context.Context, _ mcp.CallToolRequest, a update
 	}
 	updated, err := h.store.UpdateLead(lead)
 	if err != nil {
-		res, _ := toolErr(err)
-		embedWidget(res, leadForm("update_lead", leadValues(lead), leadFieldErrors(err)))
+		errs := leadFieldErrors(err)
+		res := formErrorResult(errs, err.Error())
+		embedWidget(res, leadForm("update_lead", leadValues(lead), errs))
 		return res, nil
 	}
-	res, err := jsonResult(updated)
-	if err != nil {
-		return nil, err
-	}
+	res := okResult(updated, fmt.Sprintf("Lead #%d updated.", updated.ID))
 	embedWidget(res, leadForm("update_lead", leadValues(updated), nil))
 	return res, nil
 }
 
+// convertOutput is convert_lead's structuredContent: the conversion result
+// (Lead/Contact/Deal) plus the refreshed leads collection under leadsRowsKey so
+// a leads table that fired the action repaints in place.
+type convertOutput struct {
+	db.ConvertResult
+	Leads []leadListItem `json:"leads"`
+}
+
 func (h *handlers) convertLead(_ context.Context, _ mcp.CallToolRequest, a convertLeadArgs) (*mcp.CallToolResult, error) {
-	res, err := h.store.Convert(a.ID, db.ConvertOptions{
+	conv, err := h.store.Convert(a.ID, db.ConvertOptions{
 		MakeDeal: a.MakeDeal, DealTitle: a.DealTitle, DealValue: a.DealValue, DealCurrency: a.DealCurrency,
 	})
 	if err != nil {
 		return toolErr(err)
 	}
-	out, err := jsonResult(res)
-	if err != nil {
-		return nil, err
+	items := h.latestLeads()
+	status := fmt.Sprintf("Lead #%d converted to contact #%d.", conv.Lead.ID, conv.Contact.ID)
+	if conv.Deal != nil {
+		status = fmt.Sprintf("Lead #%d converted to contact #%d with deal #%d.", conv.Lead.ID, conv.Contact.ID, conv.Deal.ID)
 	}
-	h.embedRefreshedLeads(out)
-	return out, nil
+	res := okResult(convertOutput{ConvertResult: conv, Leads: items}, status)
+	embedTable(res, func(rows []map[string]any) *gadget.Table { return leadsTable("Leads", rows) }, items)
+	return res, nil
 }
 
 func (h *handlers) deleteLead(_ context.Context, _ mcp.CallToolRequest, a idArg) (*mcp.CallToolResult, error) {
@@ -229,10 +236,10 @@ func (h *handlers) deleteLead(_ context.Context, _ mcp.CallToolRequest, a idArg)
 	if err != nil {
 		return toolErr(err)
 	}
-	res, err := jsonResult(map[string]any{"deleted": a.ID, "deleted_offer_ids": deletedOffers})
-	if err != nil {
-		return nil, err
-	}
-	h.embedRefreshedLeads(res)
+	items := h.latestLeads()
+	res := okResult(map[string]any{
+		"deleted": a.ID, "deleted_offer_ids": deletedOffers, leadsRowsKey: items,
+	}, fmt.Sprintf("Lead #%d deleted.", a.ID))
+	embedTable(res, func(rows []map[string]any) *gadget.Table { return leadsTable("Leads", rows) }, items)
 	return res, nil
 }
